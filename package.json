@@ -1,0 +1,40 @@
+{
+  "name": "rulenudge",
+  "version": "0.1.0",
+  "description": "Check whether your CLAUDE.md rules were actually followed, from Claude Code session logs — and remind Claude at the start of the next session.",
+  "type": "module",
+  "bin": {
+    "rulenudge": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "rules",
+    "compliance",
+    "hooks",
+    "ai-agent",
+    "cli"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

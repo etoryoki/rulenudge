@@ -1,0 +1,90 @@
+# rulenudge
+
+**Checks whether your CLAUDE.md rules were actually followed — not how they are written.**
+
+Linters read your CLAUDE.md. rulenudge reads your Claude Code session logs and tells you which rules were broken, when, and by which command. Then it can remind Claude at the start of the next session.
+
+```sh
+npx rulenudge
+```
+
+```
+  rulenudge — were your CLAUDE.md rules actually followed?
+
+  Last 7 days · 42 sessions · 3120 tool calls
+
+  5 checkable rule(s)
+    ✓ followed         3
+    ✗ broken           1
+    ? unclear          1   (you had just asked for it)
+    - not applicable   0   (rule added later, or no session ran under it)
+    · not checkable    6   (needs judgement — not checked yet)
+
+  ────────────────────────────────────────────────────────
+  Broken rules
+  ────────────────────────────────────────────────────────
+
+  ✗ Never run `git push --force`.
+    my-app/CLAUDE.md:12 · 2x in 2 session(s) · rule since 2026-09-10 14:02
+      2026-09-21 18:44  git push --force origin feature/login
+      2026-09-23 09:12  git push --force
+```
+
+Everything runs locally. Nothing is sent anywhere. No dependencies.
+
+## Remind Claude at the start of each session
+
+```sh
+npm i -g rulenudge
+rulenudge install-hook
+```
+
+This adds a `SessionStart` hook to `~/.claude/settings.json` (a backup is written first). When a new session starts in a project, rulenudge checks the earlier sessions there and, if a rule was broken, tells Claude:
+
+```
+[rulenudge] In earlier sessions in this project, these CLAUDE.md rules were broken:
+1. "Never run `git push --force`." (my-app/CLAUDE.md:12) — 2026-09-23 09:12: git push --force
+Follow these rules in this session. If the user explicitly asks for one of these actions, confirm with them first.
+```
+
+Each violation is reminded once. With no new violations, you only see one line (`no new violations`). Remove it with `rulenudge uninstall-hook`.
+
+## What it can check
+
+rulenudge only judges rules it can check without guessing. Everything else is counted as "not checkable" and left alone.
+
+| Rule in CLAUDE.md / AGENTS.md | Broken when Claude… |
+|---|---|
+| `- Never run \`git push --force\`` (any negated bullet with a command in backticks) | runs that command |
+| `- Don't merge PRs yourself` | runs `gh pr merge` |
+| `- Never read \`.env\` files` | reads `.env`, `.env.local`, … (not `.env.example`) |
+| `- Use pnpm` | installs with npm / yarn / bun |
+| `- Always work in a git worktree, never in the main checkout` | edits files or runs `git switch/commit/reset/…` in the main checkout |
+
+How it avoids false positives:
+
+- **Rules are only applied after they were written.** rulenudge uses `git blame` to find when each line was added, so it never judges older sessions by a newer CLAUDE.md.
+- **Quoted text is not a command.** `grep "git push --force" notes.md` does not count.
+- **"You asked for it" is shown as unclear**, not as a violation — when your own last messages asked for that action (e.g. "please merge it").
+- **Subagent transcripts are skipped**, and only files inside the project are judged.
+
+It also lists sessions that started where no CLAUDE.md / AGENTS.md exists, so no project rules were loaded at all.
+
+## Options
+
+```
+rulenudge [--days N] [--project DIR] [--json]
+rulenudge install-hook | uninstall-hook
+```
+
+Exit code is `1` when a rule was broken (useful in scripts), `0` otherwise.
+
+## Limitations
+
+- Rules that need judgement ("reply in Japanese", "keep functions small") are not checked.
+- It reads Claude Code's local logs (`~/.claude/projects`). The log format is not a public API and may change.
+- Node.js 20 or later.
+
+## License
+
+MIT

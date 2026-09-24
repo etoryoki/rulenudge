@@ -19,7 +19,8 @@ function where(r: RuleResult): string {
 }
 
 function short(s: string, n: number): string {
-  const one = s.replace(/\s+/g, " ").trim();
+  // drop Markdown emphasis markers (**bold**, __bold__) copied from CLAUDE.md
+  const one = s.replace(/\*\*|__/g, "").replace(/\s+/g, " ").trim();
   return one.length > n ? one.slice(0, n - 1) + "…" : one;
 }
 

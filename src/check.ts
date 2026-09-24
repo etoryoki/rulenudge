@@ -8,7 +8,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { inMainCheckout, isUnder, repoInfo } from "./git.js";
+import { inMainCheckout, isUnder, norm, repoInfo } from "./git.js";
 import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
 import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
@@ -182,7 +182,7 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
         const hit = all.find((c) => {
           if (!MUTATING_GIT.test(c.text)) return false;
           const repo = repoInfo(c.cwd);
-          return !!repo && !!ruleRepo && repo.main === ruleRepo.main && inMainCheckout(c.cwd, repo);
+          return !!repo && !!ruleRepo && norm(repo.main) === norm(ruleRepo.main) && inMainCheckout(c.cwd, repo);
         });
         if (!hit) return null;
         return { what: `${show(hit)}  (in the main checkout: ${hit.cwd})`, keywords: [hit.text.split(/\s+/)[1]] };

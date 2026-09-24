@@ -8,6 +8,7 @@ Usage:
   rulenudge [--days N] [--project DIR] [--json]   check recent Claude Code sessions
   rulenudge install-hook                          remind Claude of broken rules at session start
   rulenudge uninstall-hook                        remove the hook
+  rulenudge statusline [--always]                 "📏 N broken" for the current project (Claude Code statusLine)
   rulenudge hook                                  (used by the hook itself)
 
 Options:
@@ -35,6 +36,10 @@ async function main(): Promise<void> {
   if (cmd === "hook") {
     const { runHook } = await import("./hook.js");
     return void (await runHook());
+  }
+  if (cmd === "statusline") {
+    const { runStatusline } = await import("./statusline.js");
+    return void (await runStatusline(args.slice(1)));
   }
   if (cmd === "install-hook") return (await import("./install.js")).installHook();
   if (cmd === "uninstall-hook") return (await import("./install.js")).uninstallHook();

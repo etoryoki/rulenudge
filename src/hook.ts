@@ -3,20 +3,13 @@
 // single-instance lock, hard time limit, explicit exit on every path.
 
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import path from "node:path";
 
-import { check } from "./check.js";
 import { renderNudge } from "./report.js";
-import { encodeProjectDir, readSessions } from "./sessions.js";
+import { refreshStatus, stateDir } from "./status.js";
 
 const HARD_LIMIT_MS = 8_000;
-const LOOKBACK_MS = 7 * 86_400_000;
 const MAX_REMEMBERED = 1000;
-
-function stateDir(): string {
-  return path.join(process.env.RULENUDGE_HOME ?? homedir(), ".rulenudge");
-}
 
 let releaseLock: (() => void) | null = null;
 
@@ -129,13 +122,8 @@ export async function runHook(): Promise<never> {
   releaseLock = acquireLock();
   if (!releaseLock) exit();
   try {
-    const since = Date.now() - LOOKBACK_MS;
-    const { events, sessions } = readSessions({
-      since,
-      projectFolders: [encodeProjectDir(cwd)],
-      excludeSessionId: input.session_id,
-    });
-    const result = check(events, sessions, since);
+    // also records the per-project count read by statuslines
+    const { result } = refreshStatus(cwd, input.session_id);
     const state = loadState();
     const fresh = result.results
       .filter((r) => r.verdict === "violated")

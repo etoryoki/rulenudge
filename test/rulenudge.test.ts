@@ -280,6 +280,29 @@ describe("hook and install (CLI)", () => {
     expect(existsSync(path.join(home, ".rulenudge", "hook.lock"))).toBe(false);
   });
 
+  it("statusline shows the broken count, serves the cache, and leaves no lock", () => {
+    commitClaudeMd("- Never run `git push --force`.\n", Date.now() - 3 * DAY);
+    const input = JSON.stringify({ workspace: { project_dir: repo, current_dir: repo } });
+
+    expect(cli(["statusline"], input).stdout).toBe("");
+    expect(cli(["statusline", "--always"], JSON.stringify({ cwd: repo })).stdout.trim()).toBe("📏 ok");
+
+    session("s1", repo, [{ bash: "git push --force", at: Date.now() - DAY }]);
+    // cached result (fresh for 60s) is served as-is
+    expect(cli(["statusline"], input).stdout).toBe("");
+    const refreshed = spawnSync(process.execPath, [CLI, "statusline"], {
+      input,
+      encoding: "utf8",
+      env: { ...process.env, RULENUDGE_PROJECTS_DIR: projects, RULENUDGE_HOME: home, RULENUDGE_STATUS_FRESH_MS: "0" },
+    });
+    expect(refreshed.stdout.trim()).toBe("📏 1 broken");
+
+    const status = JSON.parse(readFileSync(path.join(home, ".rulenudge", "status.json"), "utf8"));
+    expect(status.version).toBe(1);
+    expect(Object.values(status.projects)).toEqual([expect.objectContaining({ broken: 1, rules: 1 })]);
+    expect(existsSync(path.join(home, ".rulenudge", "status.lock"))).toBe(false);
+  });
+
   it("installs the hook without touching other settings, idempotently", () => {
     const settings = path.join(home, ".claude", "settings.json");
     writeFileSync(settings, JSON.stringify({ model: "x", hooks: { Stop: [{ hooks: [{ type: "command", command: "echo" }] }] } }));

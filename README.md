@@ -49,6 +49,20 @@ Follow these rules in this session. If the user explicitly asks for one of these
 
 Each violation is reminded once. With no new violations, you only see one line (`no new violations`). Remove it with `rulenudge uninstall-hook`.
 
+## Show the count in your statusline
+
+```json
+"statusLine": { "type": "command", "command": "rulenudge statusline" }
+```
+
+Prints `📏 2 broken` for the current project when a checkable rule was broken in the last 7 days, and nothing otherwise (`--always` prints `📏 ok` too). It serves a cached result and lets only one process at a time refresh it, so it stays fast (~0.2 s) and never piles up processes.
+
+Other statuslines can show the same count without running rulenudge: the result is kept in `~/.rulenudge/status.json`:
+
+```json
+{ "version": 1, "projects": { "<project dir, non-alphanumerics replaced by ->": { "at": 1790000000000, "broken": 2, "rules": 5 } } }
+```
+
 ## What it can check
 
 rulenudge only judges rules it can check without guessing. Everything else is counted as "not checkable" and left alone.

@@ -37,5 +37,13 @@
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   },
-  "author": "Koji (QuinQue Inc.) <support@kojihq.com>"
+  "author": "Koji (QuinQue Inc.) <support@kojihq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/etoryoki/rulenudge.git"
+  },
+  "homepage": "https://github.com/etoryoki/rulenudge#readme",
+  "bugs": {
+    "url": "https://github.com/etoryoki/rulenudge/issues"
+  }
 }

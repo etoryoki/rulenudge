@@ -128,7 +128,7 @@ export async function runHook(): Promise<never> {
 
   releaseLock = acquireLock();
   if (!releaseLock) exit();
-  {
+  try {
     const since = Date.now() - LOOKBACK_MS;
     const { events, sessions } = readSessions({
       since,
@@ -157,5 +157,7 @@ export async function runHook(): Promise<never> {
       systemMessage: `rulenudge: reminded Claude of ${fresh.length} broken CLAUDE.md rule(s).`,
       hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: renderNudge(fresh) },
     });
+  } catch {
+    exit(); // never block session start; exit() releases the lock
   }
 }

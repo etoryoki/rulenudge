@@ -9,9 +9,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { inMainCheckout, isUnder, repoInfo } from "./git.js";
-import { extractRules, type Rule, type Uncheckable } from "./rules.js";
+import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
-import { leadingCd, normalizeMsysPath, splitCommands, startsWithCommand } from "./shell.js";
+import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
 
 export type Verdict = "violated" | "unclear" | "followed" | "not-applicable";
 
@@ -41,7 +41,8 @@ export interface CheckResult {
 
 const RULE_FILES = ["CLAUDE.md", "AGENTS.md", path.join(".claude", "CLAUDE.md")];
 const OTHER_PMS = /^(npm|pnpm|yarn|bun)\s+(install|i|add|ci|remove|uninstall|rm)\b/;
-const READERS = /^(cat|less|more|head|tail|type|source|\.|bat|grep|rg|sed|awk)\b/;
+const READERS = /^(cat|less|more|head|tail|type|source|\.|bat|grep|rg|sed|awk|get-content|gc|select-string)\b/i;
+const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 const ENV_FILE = /(^|[\s/\\])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w.-]+)?(?=$|\s)/;
 const MUTATING_GIT = /^git\s+(switch|checkout|reset|commit|merge|rebase|stash|restore|clean|cherry-pick|revert|am|apply)\b/;
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -56,14 +57,23 @@ const JA_SYNONYMS: Record<string, string[]> = {
   rm: ["削除", "消して"],
   install: ["インストール", "入れて"],
   commit: ["コミット"],
-  env: [".env", "環境変数"],
   hooks: ["フック", "hook"],
   settings: ["設定"],
 };
 
+/**
+ * Did the user just ask for this action? Only a sentence that mentions it and is
+ * not itself a prohibition counts ("don't force push" must stay a violation).
+ */
 function userAsked(ev: ToolEvent, keywords: string[]): boolean {
   const t = ev.lastUserText.toLowerCase();
   if (!t) return false;
+  return t
+    .split(/[\n。！？!?]+|\.\s/)
+    .some((sentence) => mentions(sentence, keywords) && !NEGATION.test(sentence));
+}
+
+function mentions(t: string, keywords: string[]): boolean {
   return keywords.some((k) => {
     const words = [k, ...(JA_SYNONYMS[k] ?? [])];
     return words.some((w) => {
@@ -124,7 +134,7 @@ function ruleRoot(rule: Rule): string | null {
 }
 
 function commandOf(ev: ToolEvent): string | null {
-  return ev.tool === "Bash" && typeof ev.input.command === "string" ? ev.input.command : null;
+  return SHELL_TOOLS.has(ev.tool) && typeof ev.input.command === "string" ? ev.input.command : null;
 }
 
 function fileOf(ev: ToolEvent): string | null {
@@ -139,36 +149,43 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
   const root = ruleRoot(rule);
 
   if (cmd !== null) {
-    const cwd = leadingCd(cmd) ?? ev.cwd;
-    if (root && !isUnder(cwd, root)) return null;
-    const cmds = splitCommands(cmd);
+    const all = commandsWithCwd(cmd, ev.cwd);
+    const cmds = all.filter((c) => !root || isUnder(c.cwd, root));
+    const show = (c: { text: string }) => unquote(c.text);
     switch (rule.kind) {
       case "forbidden-cmd": {
-        const hit = cmds.find((c) => startsWithCommand(c, rule.value!));
+        const hit = cmds.find((c) => startsWithCommand(c.text, rule.value!));
         if (hit) {
           // the action word the user would have used when asking for it: last non-flag token
           const words = rule.value!.split(/\s+/).filter((w) => !w.startsWith("-"));
-          return { what: hit, keywords: [words[words.length - 1]] };
+          return { what: show(hit), keywords: [words[words.length - 1]] };
         }
         return null;
       }
       case "package-manager": {
         const hit = cmds.find((c) => {
-          const m = c.match(OTHER_PMS);
+          const m = c.text.match(OTHER_PMS);
           return m !== null && m[1] !== rule.value;
         });
-        return hit ? { what: hit, keywords: [hit.split(/\s+/)[0]] } : null;
+        return hit ? { what: show(hit), keywords: [hit.text.split(/\s+/)[0]] } : null;
       }
       case "no-env": {
-        const hit = cmds.find((c) => READERS.test(c) && ENV_FILE.test(c));
-        return hit ? { what: hit, keywords: ["env"] } : null;
+        const hit = cmds.find((c) => READERS.test(c.text) && ENV_FILE.test(unquote(c.text)));
+        if (!hit) return null;
+        const envFile = unquote(hit.text).match(/\.env[\w.-]*/)?.[0] ?? ".env";
+        return { what: show(hit), keywords: [envFile, ".env"] };
       }
       case "worktree-only": {
-        const hit = cmds.find((c) => MUTATING_GIT.test(c));
+        // scope is the repository (main checkout + its worktrees), not the rule file's folder:
+        // `git -C <main> commit` from inside a worktree still breaks the rule
+        const ruleRepo = repoInfo(root ?? ev.cwd);
+        const hit = all.find((c) => {
+          if (!MUTATING_GIT.test(c.text)) return false;
+          const repo = repoInfo(c.cwd);
+          return !!repo && !!ruleRepo && repo.main === ruleRepo.main && inMainCheckout(c.cwd, repo);
+        });
         if (!hit) return null;
-        const repo = repoInfo(cwd);
-        if (!repo || !inMainCheckout(cwd, repo)) return null;
-        return { what: `${hit}  (in the main checkout: ${cwd})`, keywords: [hit.split(/\s+/)[1]] };
+        return { what: `${show(hit)}  (in the main checkout: ${hit.cwd})`, keywords: [hit.text.split(/\s+/)[1]] };
       }
     }
   }
@@ -178,7 +195,7 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
     if (rule.kind === "no-env") {
       const base = path.basename(file);
       if (/^\.env(\.|$)/.test(base) && !/\.(example|sample|template|dist)$/.test(base)) {
-        return { what: `${ev.tool} ${file}`, keywords: ["env", base] };
+        return { what: `${ev.tool} ${file}`, keywords: [base, ".env"] };
       }
     }
     if (rule.kind === "worktree-only" && WRITE_TOOLS.has(ev.tool)) {

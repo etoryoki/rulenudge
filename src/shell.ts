@@ -1,6 +1,12 @@
-// Minimal shell lexer: split a command line into simple commands,
-// dropping quoted strings and heredoc bodies so that `grep "git pull"`
-// is not mistaken for running `git pull`.
+// Minimal shell lexer: split a command line into simple commands.
+// Quoted strings are kept but wrapped in QOPEN...QCLOSE markers so separators
+// inside them do not split, and heredoc bodies are dropped, so that
+// `grep "a && git pull"` is not mistaken for running `git pull`.
+
+import path from "node:path";
+
+export const QOPEN = "\u0001";
+export const QCLOSE = "\u0002";
 
 /** Remove heredoc bodies (<<EOF ... EOF, <<'EOF' ... EOF, <<-EOF ... EOF). */
 function stripHeredocs(cmd: string): string {
@@ -41,7 +47,7 @@ export function splitCommands(input: string): string[] {
     const ch = src[i];
     if (ch === "'" || ch === '"') {
       const end = src.indexOf(ch, i + 1);
-      cur += "_Q_";
+      cur += QOPEN + src.slice(i + 1, end === -1 ? src.length : end) + QCLOSE;
       i = end === -1 ? src.length : end + 1;
       continue;
     }
@@ -74,6 +80,39 @@ export function startsWithCommand(command: string, prefix: string): boolean {
   const c = command.replace(/\s+/g, " ");
   const p = prefix.replace(/\s+/g, " ").trim();
   return c === p || c.startsWith(p + " ");
+}
+
+/** Remove quote markers (for reading paths and file names). */
+export function unquote(s: string): string {
+  return s.split(QOPEN).join("").split(QCLOSE).join("");
+}
+
+export interface SimpleCommand {
+  /** Command text; quoted parts stay wrapped in markers. `git -C dir x` becomes `git x`. */
+  text: string;
+  /** Directory the command runs in, following `cd` / `Set-Location` / `git -C`. */
+  cwd: string;
+}
+
+export function commandsWithCwd(input: string, baseCwd: string): SimpleCommand[] {
+  let cwd = baseCwd;
+  const out: SimpleCommand[] = [];
+  for (const c of splitCommands(input)) {
+    const plain = unquote(c);
+    const cd = plain.match(/^(?:cd|pushd|set-location|sl|chdir)\s+(?:-path\s+|-literalpath\s+)?(.+)$/i);
+    if (cd) {
+      const target = normalizeMsysPath(cd[1].trim());
+      if (target !== "-" && !target.startsWith("~") && !target.includes("$")) cwd = path.resolve(cwd, target);
+      continue;
+    }
+    const gitC = c.match(/^git\s+-C\s+(\S+)\s+(.*)$/);
+    if (gitC) {
+      out.push({ text: `git ${gitC[2]}`, cwd: path.resolve(cwd, normalizeMsysPath(unquote(gitC[1]))) });
+      continue;
+    }
+    out.push({ text: c, cwd });
+  }
+  return out;
 }
 
 /** Extract the target directory of leading `cd <dir>` commands, if any. */

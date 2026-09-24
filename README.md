@@ -65,7 +65,7 @@ How it avoids false positives:
 
 - **Rules are only applied after they were written.** rulenudge uses `git blame` to find when each line was added, so it never judges older sessions by a newer CLAUDE.md.
 - **Quoted text is not a command.** `grep "git push --force" notes.md` does not count.
-- **"You asked for it" is shown as unclear**, not as a violation — when your own last messages asked for that action (e.g. "please merge it").
+- **"You asked for it" is shown as unclear**, not as a violation — when your own last messages asked for that action (e.g. "please merge it"). A prohibition ("don't force push") never counts as asking.
 - **Subagent transcripts are skipped**, and only files inside the project are judged.
 
 It also lists sessions that started where no CLAUDE.md / AGENTS.md exists, so no project rules were loaded at all.
@@ -82,6 +82,9 @@ Exit code is `1` when a rule was broken (useful in scripts), `0` otherwise.
 ## Limitations
 
 - Rules that need judgement ("reply in Japanese", "keep functions small") are not checked.
+- "Unclear" means one of your last three messages mentioned that action (e.g. "merge", "push", the file name) in a sentence that was not a prohibition. A loosely related message can therefore turn a real violation into "unclear" — the evidence is always shown so you can judge.
+- Commands inside quoted strings (`bash -c "git push --force"`, `"$(…)"`) are not inspected.
+- Package-manager rules are recognised in the form "Use pnpm" / "pnpm only". A sentence like "Don't use npm, use pnpm" is read as a prohibition and not checked.
 - It reads Claude Code's local logs (`~/.claude/projects`). The log format is not a public API and may change.
 - Node.js 20 or later.
 

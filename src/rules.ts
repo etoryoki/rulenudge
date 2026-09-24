@@ -34,7 +34,7 @@ export interface RuleSet {
   uncheckable: Uncheckable[];
 }
 
-const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|読まない|実行しない/i;
+export const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|読まない|実行しない/i;
 const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;
 const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const CLI = /^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;

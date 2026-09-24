@@ -128,7 +128,9 @@ describe("rule extraction", () => {
 
 describe("shell lexing", () => {
   it("ignores quoted strings and heredoc bodies", () => {
-    expect(splitCommands(`grep "git push --force" notes.md`)).toEqual(["grep _Q_ notes.md"]);
+    const quoted = splitCommands(`grep "a && git push --force" notes.md`);
+    expect(quoted).toHaveLength(1);
+    expect(quoted[0].startsWith("grep ")).toBe(true);
     expect(splitCommands("cat <<EOF > x\ngit push --force\nEOF\nls")).toEqual(["cat  > x", "ls"]);
     expect(splitCommands("cd a && git status; npm test | tail -1")).toEqual(["cd a", "git status", "npm test", "tail -1"]);
   });
@@ -154,6 +156,41 @@ describe("checking sessions", () => {
     commitClaudeMd("- Never run `git push --force`.\n", Date.now() - 3 * DAY);
     session("s1", repo, [{ bash: `grep -n "git push --force" docs/*.md`, at: Date.now() - DAY }]);
     expect(verdictOf("forbidden-cmd")?.verdict).toBe("followed");
+  });
+
+  it("keeps a violation when the user had just forbidden it", () => {
+    commitClaudeMd("- Never run `git push --force`.\n", Date.now() - 3 * DAY);
+    session("s1", repo, [
+      { user: "Do not force push to this remote.", at: Date.now() - DAY },
+      { bash: "git push --force", at: Date.now() - DAY + 1000 },
+    ]);
+    expect(verdictOf("forbidden-cmd")?.verdict).toBe("violated");
+  });
+
+  it("follows cd and git -C to the directory a command really runs in", () => {
+    commitClaudeMd("- Always work in a git worktree, never in the main checkout.\n", Date.now() - 3 * DAY);
+    const wt = path.join(home, "repo-wt2");
+    git(["worktree", "add", "-q", "-b", "f2", wt], repo);
+    writeFileSync(path.join(wt, "CLAUDE.md"), readFileSync(path.join(repo, "CLAUDE.md")));
+    session("s1", wt, [{ bash: `git -C "${repo}" commit -m x`, at: Date.now() - DAY }]);
+    expect(run().results.some((r) => r.rule.kind === "worktree-only" && r.verdict === "violated")).toBe(true);
+  });
+
+  it("checks PowerShell tool commands too", () => {
+    commitClaudeMd("- Never read `.env` files.\n", Date.now() - 3 * DAY);
+    const dir = path.join(projects, encodeProjectDir(repo));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "ps.jsonl"),
+      JSON.stringify({
+        sessionId: "ps",
+        cwd: repo,
+        timestamp: new Date(Date.now() - DAY).toISOString(),
+        type: "assistant",
+        message: { content: [{ type: "tool_use", name: "PowerShell", input: { command: "Get-Content .env.local" } }] },
+      }) + "\n",
+    );
+    expect(verdictOf("no-env")?.verdict).toBe("violated");
   });
 
   it("marks actions the user just asked for as unclear, not violations", () => {

@@ -6,7 +6,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { isUnder, norm, worktreeRoot } from "./git.js";
+import { fileRoot, isUnder, norm, ruleCovers, worktreeRoot } from "./git.js";
 import type { Rule } from "./rules.js";
 import type { ToolEvent } from "./sessions.js";
 import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
@@ -163,6 +163,166 @@ export class AmendAfterPushTracker implements OrderTracker {
   }
 }
 
+const scriptsCache = new Map<string, Map<string, string[]>>();
+
+/** npm scripts of the checkout and its workspace packages: name → bodies. */
+function scriptsOf(root: string): Map<string, string[]> {
+  const k = norm(root);
+  const hit = scriptsCache.get(k);
+  if (hit) return hit;
+  const scripts = new Map<string, string[]>();
+  const add = (dir: string) => {
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as { scripts?: Record<string, string> };
+      for (const [name, body] of Object.entries(pkg.scripts ?? {})) scripts.set(name, [...(scripts.get(name) ?? []), body]);
+    } catch {
+      /* no package.json */
+    }
+  };
+  add(root);
+  for (const group of ["apps", "packages", "services", "libs", "modules", "infra"]) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(path.join(root, group));
+    } catch {
+      continue;
+    }
+    for (const n of names) add(path.join(root, group, n));
+  }
+  scriptsCache.set(k, scripts);
+  return scripts;
+}
+
+const RUNNER = /^(?:npx|pnpx|bunx|(?:pnpm|npm|yarn)\s+(?:(?:-r|--recursive|--filter(?:=\S+|\s+\S+)|-F\s+\S+|-w|--workspace(?:=\S+|\s+\S+)?)\s+)*(?:exec|dlx)|yarn|node\s+\S*node_modules\S*[\\/](?=\S))\s*/i;
+
+/** Does `text` run `cmd` itself: `tsc --noEmit -p x`, `npx tsc --noEmit`, `pnpm exec tsc --noEmit`? */
+function runsDirectly(text: string, cmd: string): boolean {
+  const words = text.replace(RUNNER, "").split(/\s+/);
+  const want = cmd.split(/\s+/);
+  const prog = (w: string) => w.replace(/^.*[\\/]/, "").replace(/\.(?:c?js|mjs|cmd|exe)$/i, "");
+  return prog(words[0] ?? "") === prog(want[0]) && want.slice(1).every((w) => words.includes(w));
+}
+
+/** Script names that run `cmd`, directly or through other scripts (`type-check` → `tsc --noEmit`). */
+function scriptsRunning(root: string, cmd: string): Set<string> {
+  const scripts = scriptsOf(root);
+  const names = new Set<string>();
+  const runs = (body: string) =>
+    body.split(/&&|\|\||;/).some((part) => {
+      const p = part.trim();
+      if (runsDirectly(p, cmd)) return true;
+      const m = p.match(SCRIPT_CALL);
+      return !!m && names.has(m[1]);
+    });
+  // a fixed point: scripts calling scripts (`pnpm --filter "*" type-check`, `turbo run type-check`)
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [name, bodies] of scripts) {
+      if (!names.has(name) && bodies.some(runs)) {
+        names.add(name);
+        changed = true;
+      }
+    }
+  }
+  return names;
+}
+
+const SCRIPT_CALL =
+  /^(?:(?:npm|pnpm|yarn|bun)\s+(?:(?:-r|--recursive|--if-present|--parallel|-w|--workspaces?|--workspace(?:=\S+|\s+\S+)|--filter(?:=\S+|\s+\S+)|-F\s+\S+)\s+)*(?:run\s+)?|turbo\s+(?:run\s+)?|nx\s+(?:run-many\s+(?:-t|--target)\s+|run\s+\S+:)?)["']?([\w:.-]+)/i;
+
+/** Does the command run the check, directly or through a package script? */
+function runsCheck(text: string, cmd: string, root: string): boolean {
+  const t = unquote(text);
+  if (runsDirectly(t, cmd) || startsWithCommand(t, cmd)) return true;
+  const m = t.match(SCRIPT_CALL);
+  return !!m && scriptsRunning(root, cmd).has(m[1]);
+}
+
+/** A git hook in the checkout (husky or .git/hooks) that runs the check on this action. */
+function hookRuns(root: string, hook: string, cmd: string): boolean {
+  for (const file of [path.join(root, ".husky", hook), path.join(root, ".git", "hooks", hook)]) {
+    let body: string;
+    try {
+      body = readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    const lines = body.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
+    if (lines.some((l) => runsCheck(l.trim(), cmd, root))) return true;
+  }
+  return false;
+}
+
+/**
+ * "Run `x` before pushing / committing": after a code change in a session, the check must run
+ * before the next push (or commit) from that checkout. A git hook that runs the check counts,
+ * unless the push / commit skips hooks with --no-verify.
+ */
+export class RunBeforeTracker implements OrderTracker {
+  /** key = sessionId|repoRoot → code changed since the check last ran */
+  private dirty = new Map<string, boolean>();
+
+  constructor(
+    private readonly rule: Rule,
+    private readonly scope: string | null,
+  ) {}
+
+  private inScope(root: string): boolean {
+    return ruleCovers(this.scope, root);
+  }
+
+  step(ev: ToolEvent): OrderHit | null {
+    const cmd = this.rule.value!;
+    const trigger = this.rule.trigger ?? "push";
+    if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(ev.tool)) {
+      const file = fileOf(ev);
+      if (!file || NOT_CODE.test(file)) return null;
+      const root = fileRoot(file);
+      if (root && this.inScope(root)) this.dirty.set(`${ev.sessionId}|${norm(root)}`, true);
+      return null;
+    }
+    if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
+    for (const c of commandsWithCwd(ev.input.command, ev.cwd)) {
+      const root = worktreeRoot(c.cwd);
+      if (!root || !this.inScope(root)) continue;
+      const k = `${ev.sessionId}|${norm(root)}`;
+      if (runsCheck(c.text, cmd, root)) {
+        this.dirty.set(k, false);
+        continue;
+      }
+      const isTrigger =
+        trigger === "push"
+          ? /^git\s+push\b/.test(c.text) && !/\s(?:-n|--dry-run)\b/.test(c.text)
+          : COMMIT.test(c.text) && !/--amend\b/.test(c.text);
+      if (!isTrigger) continue;
+      if (this.dirty.get(k) !== true) continue;
+      // (`git push -n` is a dry run; `git commit -n` skips hooks)
+      const noVerify = (trigger === "push" ? /\s--no-verify\b/ : /\s(?:--no-verify|-n)\b/).test(c.text);
+      if (!noVerify && hookRuns(root, trigger === "push" ? "pre-push" : "pre-commit", cmd)) {
+        this.dirty.set(k, false);
+        continue;
+      }
+      this.dirty.set(k, false);
+      return {
+        ts: ev.ts,
+        sessionId: ev.sessionId,
+        what: `${unquote(c.text).slice(0, 80)}  (files were edited, \`${cmd}\` not run since${noVerify ? "; hooks skipped with --no-verify" : ""})`,
+        unclear: userSkipped(ev, cmd),
+      };
+    }
+    return null;
+  }
+}
+
+/** The user asked to push / commit without the check ("skip lint", "型チェックなしで"). */
+function userSkipped(ev: ToolEvent, cmd: string): boolean {
+  const word = cmd.split(/\s+/)[0].replace(/^.*[\\/]/, "");
+  return ev.lastUserText
+    .toLowerCase()
+    .split(/[\n。！？!?]+|\.\s/)
+    .some((s) => (s.includes(word.toLowerCase()) || /check|lint|チェック|型/.test(s)) && SKIP_TESTS.test(s) && !/^(?:never|don['’]t|do not)\b/i.test(s.trim()));
+}
+
 export class TestBeforeCommitTracker implements OrderTracker {
   /** key = sessionId|repoRoot → the code changed since the last test run / commit */
   private dirty = new Map<string, boolean>();
@@ -175,15 +335,14 @@ export class TestBeforeCommitTracker implements OrderTracker {
   ) {}
 
   private inScope(root: string): boolean {
-    const scoped = !this.scope || isUnder(root, this.scope) || isUnder(this.scope, root);
-    return scoped && hasTestSetup(root);
+    return ruleCovers(this.scope, root) && hasTestSetup(root);
   }
 
   step(ev: ToolEvent): OrderHit | null {
     if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(ev.tool)) {
       const file = fileOf(ev);
       if (!file || NOT_CODE.test(file)) return null;
-      const root = worktreeRoot(path.dirname(file));
+      const root = fileRoot(file);
       if (root && this.inScope(root)) this.dirty.set(`${ev.sessionId}|${norm(root)}`, true);
       return null;
     }

@@ -14,7 +14,8 @@ export type RuleKind =
   | "test-before-commit"
   | "protected-path"
   | "no-amend-pushed"
-  | "commit-format";
+  | "commit-format"
+  | "run-before";
 
 export interface Rule {
   kind: RuleKind;
@@ -27,6 +28,8 @@ export interface Rule {
   since: number;
   /** test-before-commit: the rule asks for passing tests, not just a test run. */
   pass?: boolean;
+  /** run-before: the command must run before this git action. */
+  trigger?: "push" | "commit";
 }
 
 export interface Uncheckable {
@@ -76,7 +79,10 @@ const FILE_VERB = /\b(?:save|write|create|generate)s?\b|\bfiles?\b|保存|作成
 const CLAUSE_BREAK =/;|。|\binstead\b|\bbut\b|代わりに|ではなく/i;
 const CLAUSE_SPLIT = /[,;、（）()]|\bbut\b|けど|けれど|が、/i;
 const CLI =/^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;
-const PMS = ["npm", "pnpm", "yarn", "bun"] as const;
+// checks people run before pushing: CLIs plus linters, type checkers and task runners
+const RUNNABLE =
+  /^(?:(?:git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|node|make|cargo|go|python|python3|pip|deno|dotnet|mvn|gradle|\.\/gradlew|tsc|vue-tsc|eslint|biome|prettier|oxlint|ruff|mypy|pyright|black|flake8|pytest|vitest|jest|turbo|nx|just|tox|golangci-lint|rustfmt|clippy|swiftlint|rubocop|bundle|composer|phpstan)\b)/;
+const PMS =["npm", "pnpm", "yarn", "bun"] as const;
 
 /** When was each line written? git blame author-time, falling back to file mtime. */
 export function lineTimes(file: string): number[] | null {
@@ -131,6 +137,45 @@ function commandNegated(line: string, idx: number, len: number): boolean {
   if (!n || (n.index ?? 0) > 12 || /[`、。,;；]/.test(after.slice(0, n.index))) return false;
   const rest = after.slice((n.index ?? 0) + n[0].length);
   return /^(?:こと|です|ください|で(?:ください)?|ように)?\s*(?:[。．.!！（(、,;；]|$)/.test(rest);
+}
+
+/** Nothing but a list of code spans between two points ("`a`, `b` and `c`"), or no clause break. */
+function sameClause(between: string): boolean {
+  const rest = between.replace(/`[^`]*`/g, "").replace(/\b(?:and|or)\b|と|や|・/g, "");
+  return !/[,、;；。]/.test(rest) || /^[\s,、]*$/.test(rest);
+}
+
+/**
+ * Does the command at `token` have to run before a push / commit in this sentence?
+ * "Run `x` before pushing", "Before committing, run `x`", "push 前に `x`", "`x` を実行してから push",
+ * "Never push without running `x`". Not "push してから `x`" (the other way round).
+ */
+function orderTrigger(text: string, token: string): "push" | "commit" | null {
+  const seg = sentenceWith(text, token).split(/[;；]|\bbut\b|ただし/i).find((s) => s.includes(token)) ?? "";
+  const pos = seg.indexOf(token);
+  const kind = (t: string) => (/push|プッシュ/i.test(t) ? "push" : "commit");
+  const triggers = [...seg.matchAll(/\bpush(?:es|ed|ing)?\b|プッシュ|\bcommit(?:s|ted|ting)?\b|コミット/gi)];
+  for (const t of triggers) {
+    const at = t.index ?? 0;
+    const end = at + t[0].length;
+    // English: "before pushing" / "prior to commit" / "without … push"
+    const before = seg.slice(Math.max(0, at - 14), at);
+    if (/\b(?:before|prior to)\s+(?:(?:you|the|a|any|each|every)\s+)?$/i.test(before)) {
+      if (pos > end || sameClause(seg.slice(pos + token.length, at))) return kind(t[0]);
+    }
+    if (/\bwithout\b/i.test(seg.slice(end, pos)) && NEG_EN.test(seg.slice(0, at))) return kind(t[0]);
+    // Japanese: "push 前に `x`" / "`x` を push の前に実行" / "`x` を実行してから push"
+    if (/^\s*(?:を?する|の|し)?\s*前/.test(seg.slice(end, end + 8))) {
+      if (pos > end || sameClause(seg.slice(pos + token.length, at))) return kind(t[0]);
+    }
+    if (pos < at && /(?:して|てから|実行後|通してから|回してから)/.test(seg.slice(pos + token.length, at)) && /から|後/.test(seg.slice(pos + token.length, at))) {
+      if (sameClause(seg.slice(pos + token.length, at))) return kind(t[0]);
+    }
+    if (pos < at && /せずに|せず|しないで|なしで|なしに/.test(seg.slice(pos + token.length, at)) && NEG_JA.test(seg.slice(end))) {
+      return kind(t[0]);
+    }
+  }
+  return null;
 }
 
 function negationIndex(line: string): number {
@@ -199,6 +244,26 @@ export function extractRulesFromText(
     // 0b) order rule: don't amend commits that were already pushed ("pushed", "push 済み" —
     // not "never push after amending"). The same line may hold other rules, so no return;
     // the amend command itself is then not read as a forbidden command.
+    // 0c) order rule: run a check before pushing / committing ("push 前に `tsc --noEmit`",
+    // "Run `pnpm lint` before pushing", "Never push without running `pnpm lint`")
+    if (ruleLine && !EXEMPTION.test(line)) {
+      let found = false;
+      for (const m of line.matchAll(/`([^`]+)`/g)) {
+        const cmd = m[1].trim();
+        if (!RUNNABLE.test(cmd) || /^git\s/.test(cmd) || /[<>{}]|\.\.\./.test(cmd) || cmd.split(/\s+/).length > 6) continue;
+        // a condition anywhere in the sentence applies ("If you changed types, run `tsc` before pushing")
+        // (the part before the command, outside brackets: 「（vitest だけでは…）」 is a reason, not a condition)
+        const sentence = sentenceWith(base.text, m[0]);
+        const lead = sentence.slice(0, sentence.indexOf(m[0])).replace(/[（(][^）)]*[）)]/g, "");
+        if (softened(clauseOf(base.text, m[0])) || CONDITIONAL.test(lead)) continue;
+        const trigger = orderTrigger(base.text, m[0]);
+        if (!trigger) continue;
+        rules.push({ kind: "run-before", value: cmd, trigger, ...base, text: sentenceWith(base.text, m[0]) });
+        found = true;
+      }
+      if (found) return;
+    }
+
     let amendRule = false;
     if (ruleLine && isNegated) {
       const s = sentenceWith(base.text, /amend|アメンド/i);

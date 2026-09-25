@@ -1,7 +1,7 @@
 // Git helpers with per-path caching (git calls are the slow part).
 
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 
 export interface RepoInfo {
@@ -82,6 +82,35 @@ export function worktreeRoot(p: string): string | null {
   const roots = [info.main, ...info.linked].filter((r) => isUnder(p, r));
   if (!roots.length) return null;
   return roots.sort((a, b) => b.length - a.length)[0];
+}
+
+/** Two paths in the same repository (main checkout or any linked worktree). */
+export function sameRepo(a: string, b: string): boolean {
+  const ra = repoInfo(a);
+  const rb = repoInfo(b);
+  return !!ra && !!rb && norm(ra.main) === norm(rb.main);
+}
+
+/**
+ * Does a rule from the folder `scope` cover the checkout `root`? A rule at the top of a
+ * repository also covers its other worktrees: sessions often start in the main checkout and
+ * `cd` into a worktree to work and push there.
+ */
+export function ruleCovers(scope: string | null, root: string): boolean {
+  if (!scope || isUnder(root, scope) || isUnder(scope, root)) return true;
+  const top = worktreeRoot(scope);
+  return !!top && norm(top) === norm(scope) && sameRepo(root, scope);
+}
+
+/** Checkout that holds `file`; the file and its folders may not exist yet (a Write creates them). */
+export function fileRoot(file: string): string | null {
+  let dir = path.dirname(file);
+  while (!existsSync(dir)) {
+    const up = path.dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+  return worktreeRoot(dir);
 }
 
 /** Is `p` inside the main checkout (and not inside a linked worktree nested in it)? */

@@ -46,7 +46,10 @@ export function splitCommands(input: string): string[] {
   while (i < src.length) {
     const ch = src[i];
     if (ch === "'" || ch === '"') {
-      const end = src.indexOf(ch, i + 1);
+      // inside "…", \" and \\ are escapes; inside '…' nothing is
+      let end = i + 1;
+      while (end < src.length && src[end] !== ch) end += ch === '"' && src[end] === "\\" ? 2 : 1;
+      if (end >= src.length) end = -1;
       cur += QOPEN + src.slice(i + 1, end === -1 ? src.length : end) + QCLOSE;
       i = end === -1 ? src.length : end + 1;
       continue;

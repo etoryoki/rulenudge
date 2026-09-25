@@ -305,6 +305,74 @@ describe("commit message format", () => {
   });
 });
 
+describe("run a check before pushing", () => {
+  const read = (line: string) =>
+    extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}:${r.trigger ?? ""}`);
+
+  it("reads the rule in English and Japanese", () => {
+    expect(read("- **push 前に `tsc --noEmit`**（vitest だけでは型エラーを検知できない）。")).toEqual(["run-before:tsc --noEmit:push"]);
+    expect(read("- Run `pnpm lint` before pushing.")).toEqual(["run-before:pnpm lint:push"]);
+    expect(read("- Before committing, run `pnpm typecheck`.")).toEqual(["run-before:pnpm typecheck:commit"]);
+    expect(read("- Never push without running `pnpm lint`.")).toEqual(["run-before:pnpm lint:push"]);
+    expect(read("- `pnpm lint` を実行してから push する")).toEqual(["run-before:pnpm lint:push"]);
+    expect(read("- コミットする前に `ruff check .` を通す")).toEqual(["run-before:ruff check .:commit"]);
+  });
+
+  it("does not read exceptions, other clauses or the opposite order", () => {
+    expect(read("- `pnpm lint` before pushing is optional; CI runs it.")).toEqual([]);
+    expect(read("- Run `pnpm lint` before pushing; `pnpm dev` starts the server.")).toEqual(["run-before:pnpm lint:push"]);
+    expect(read("- `pnpm dev` で起動し、push 前に `pnpm lint` を実行する")).toEqual(["run-before:pnpm lint:push"]);
+    expect(read("- push してから `gh pr create` を実行する")).toEqual([]);
+    expect(read("- Run `pnpm build` after pushing.")).toEqual([]);
+    expect(read("- If you changed types, run `tsc --noEmit` before pushing.")).toEqual([]);
+  });
+
+  function setupTypeCheck(hook?: string) {
+    writeFileSync(path.join(repo, "package.json"), JSON.stringify({ scripts: { "type-check": 'pnpm --filter "*" type-check' } }));
+    mkdirSync(path.join(repo, "apps", "api"), { recursive: true });
+    writeFileSync(path.join(repo, "apps", "api", "package.json"), JSON.stringify({ scripts: { "type-check": "tsc --noEmit" } }));
+    if (hook) {
+      mkdirSync(path.join(repo, ".husky"), { recursive: true });
+      writeFileSync(path.join(repo, ".husky", "pre-push"), hook);
+    }
+    commitClaudeMd("- **push 前に `tsc --noEmit`**\n", Date.now() - 3 * DAY);
+  }
+
+  it("flags a push after an edit, but not after the check or an alias script", () => {
+    setupTypeCheck();
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src", "a.ts"), at: t },
+      { bash: 'git commit -am "x" && git push', at: t + 100 },
+    ]);
+    session("s2", repo, [
+      { tool: "Edit", file: path.join(repo, "src", "b.ts"), at: t + 200 },
+      { bash: "pnpm type-check && git push", at: t + 300 },
+      { tool: "Edit", file: path.join(repo, "src", "c.ts"), at: t + 400 },
+      { bash: "npx tsc --noEmit -p apps/api", at: t + 500 },
+      { bash: "git push", at: t + 600 },
+      { tool: "Edit", file: path.join(repo, "README.md"), at: t + 700 },
+      { bash: "git push", at: t + 800 },
+    ]);
+    const r = verdictOf("run-before");
+    expect(r?.violations.map((v) => v.sessionId)).toEqual(["s1"]);
+  });
+
+  it("counts a pre-push hook that runs the check, unless hooks are skipped", () => {
+    setupTypeCheck("#!/usr/bin/env sh\n# type check before push\npnpm run type-check\n");
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src", "a.ts"), at: t },
+      { bash: "git push", at: t + 100 },
+      { tool: "Edit", file: path.join(repo, "src", "b.ts"), at: t + 200 },
+      { bash: "git push --no-verify", at: t + 300 },
+    ]);
+    const r = verdictOf("run-before");
+    expect(r?.violations.map((v) => v.what)).toHaveLength(1);
+    expect(r?.violations[0].what).toContain("--no-verify");
+  });
+});
+
 describe("amend after push", () => {
   const rule = "- Never `git commit --amend` a commit that was already pushed.\n";
 
@@ -565,6 +633,11 @@ describe("shell lexing", () => {
     expect(splitCommands("cat <<EOF > x\ngit push --force\nEOF\nls")).toEqual(["cat  > x", "ls"]);
     expect(splitCommands("cd a && git status; npm test | tail -1")).toEqual(["cd a", "git status", "npm test", "tail -1"]);
     expect(splitCommands("timeout 600 npx vitest run --pool=threads")).toEqual(["npx vitest run --pool=threads"]);
+  });
+
+  it("keeps escaped quotes inside a double-quoted string", () => {
+    const cmds = splitCommands(`python -c "s=\\"a; git push\\"\nprint(s)" && npx tsc --noEmit`);
+    expect(cmds.map((c) => c.replace(/[\u0001\u0002]/g, ""))).toEqual([`python -c s=\\"a; git push\\"\nprint(s)`, "npx tsc --noEmit"]);
   });
 
   it("follows git global options and variable-based cd", async () => {

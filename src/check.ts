@@ -8,8 +8,8 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { inMainCheckout, isUnder, norm, repoInfo, worktreeRoot } from "./git.js";
-import { AmendAfterPushTracker, type OrderTracker, TestBeforeCommitTracker } from "./order.js";
+import { inMainCheckout, isUnder, norm, repoInfo, sameRepo, worktreeRoot } from "./git.js";
+import { AmendAfterPushTracker, type OrderTracker, RunBeforeTracker, TestBeforeCommitTracker } from "./order.js";
 import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
 import { commandsWithCwd, commitSubjects, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
@@ -299,13 +299,15 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
         const set = exercised.get(key(r)) ?? new Set<string>();
         set.add(ev.sessionId);
         exercised.set(key(r), set);
-        if (r.kind === "test-before-commit" || r.kind === "no-amend-pushed") {
+        if (r.kind === "test-before-commit" || r.kind === "no-amend-pushed" || r.kind === "run-before") {
           let tracker = trackers.get(key(r));
           if (!tracker) {
             tracker =
               r.kind === "test-before-commit"
                 ? new TestBeforeCommitTracker(r, ruleRoot(r))
-                : new AmendAfterPushTracker(ruleRoot(r));
+                : r.kind === "run-before"
+                  ? new RunBeforeTracker(r, ruleRoot(r))
+                  : new AmendAfterPushTracker(ruleRoot(r));
             trackers.set(key(r), tracker);
           }
           const hit = tracker.step(ev);
@@ -402,11 +404,6 @@ export function matchesPath(rel: string, pattern: string, caseSensitive = proces
   return r === p || r.startsWith(p + "/");
 }
 
-function sameRepo(a: string, b: string): boolean {
-  const ra = repoInfo(a);
-  const rb = repoInfo(b);
-  return !!ra && !!rb && norm(ra.main) === norm(rb.main);
-}
 
 /** Directories an event changes things in (file writes, and changing shell commands). */
 function changedDirs(ev: ToolEvent): { dir: string; what: string }[] {

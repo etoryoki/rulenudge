@@ -54,11 +54,27 @@ export const NEGATION = new RegExp(`${NEG_EN.source}|${NEG_JA.source}`, "i");
 const CONDITIONAL =
   /\b(?:only when|only if|unless|in case)\b|(?<!\beven\s)\b(?:if|when|while)\b|場合|とき|時は|際|次第|限り|ないと|なければ|たら|なら[、,\s]|ならば|では(?!(?:いけ|なら|なり|だめ|ダメ|駄目|ない))/i;
 // "in the main checkout": checkable — the command's folder tells whether it ran there
-const MAIN_CHECKOUT = /\b(?:in|on|from)\s+the\s+main\s+(?:checkout|working\s+(?:tree|copy)|repo(?:sitory)?\s+folder)\b|メインのチェックアウト|メインの作業ツリー/i;
+// (a modifier × a noun, so that "primary checkout" or "shared working copy" are read the same way)
+const CHECKOUT_NOUN = String.raw`(?:checkout|clone|worktree|working\s+(?:tree|copy|directory)|repo(?:sitory)?(?:\s+(?:folder|directory))?)`;
+const MAIN_CHECKOUT = new RegExp(
+  String.raw`\b(?:in|on|from|inside)\s+(?:the\s+|your\s+)?(?:main|primary|root|original|default|shared|base|top-level)\s+${CHECKOUT_NOUN}\b|(?:メイン|本体|元|共有)の?(?:チェックアウト|作業ツリー|作業フォルダ|ワークツリー|クローン)`,
+  "i",
+);
 // "on main", "to production", "in staging", "本番では", "main ブランチに": the branch or environment
-// is not in the session log, so such a rule cannot be judged without guessing
-const SCOPE =
-  /\b(?:on|in|to|into|against|from)\s+(?:the\s+)?(?:main|master|develop|trunk|production|prod|staging|release)\b(?!\s+(?:checkout|working))|\b(?:on|in|to)\s+(?:the\s+)?[\w./-]+\s+(?:branch|environment|env)\b|\bin\s+CI\b|(?:main|master|develop|本番|ステージング|staging|production|prod)\s*(?:ブランチ|環境)?\s*(?:で|に|へ|上で)/i;
+// is not in the session log, so such a rule cannot be judged without guessing.
+// The scope word has to end the phrase: not "to release infrastructure", "the main menu".
+const SCOPE_END = String.raw`(?:\s+(?:branch|environment|env|server))?(?=\s*(?:[.,;:)!?]|$|\s+(?:and|or|but|unless|if|when|without|until|before|after|directly)\b))`;
+const SCOPE = new RegExp(
+  [
+    String.raw`\b(?:on|in|to|into|against|from)\s+(?:the\s+)?(?:main|master|develop|trunk|production|prod|staging|release)${SCOPE_END}`,
+    String.raw`\b(?:on|in|to)\s+(?:the\s+)?[\w./-]+\s+(?:branch|environment|env)\b`,
+    String.raw`\bin\s+CI\b`,
+    // another checkout that is not the main one ("in the other checkout"): not judged
+    String.raw`\b(?:in|on|from)\s+(?:the\s+|another\s+|a\s+)?[\w-]+\s+${CHECKOUT_NOUN}\b`,
+    String.raw`(?:main|master|develop|本番|ステージング|staging|production|prod)\s*(?:ブランチ|環境)?\s*(?:で|に|へ|上で)`,
+  ].join("|"),
+  "i",
+);
 // "consider avoiding", "〜を避けることを検討", "なるべく"
 const HEDGE = /\b(?:consider|ideally|try to|if possible)\b|検討|なるべく|できれば|できるだけ|推奨/i;
 // "〜しない設定になっている", "〜でマスクしている": describes the system, not a rule for Claude

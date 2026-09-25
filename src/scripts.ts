@@ -14,8 +14,15 @@ export interface Pkg {
   scripts: Record<string, string>;
   /** names of everything it depends on (dependencies, devDependencies, peerDependencies) */
   deps: string[];
-  /** folders its tsconfig files point at (`references`, `paths`): checked by its tsc too */
-  tsRefs: string[];
+  /** where its tsconfig files point (`references`, `paths`): checked by its tsc too */
+  tsRefs: TsRef[];
+}
+
+// A folder a tsconfig points at. A wildcard path keeps its alias:
+// "@x/*": ["../../libs/*/src"] can reach every package in libs.
+interface TsRef {
+  dir: string;
+  wildcard?: { alias: string; target: string };
 }
 
 /** tsconfig allows comments and trailing commas. */
@@ -26,9 +33,41 @@ function readJsonc(file: string): unknown {
   return JSON.parse(text);
 }
 
-/** Folders that the package's tsconfig*.json files reference or map paths to. */
-function tsconfigRefs(dir: string): string[] {
-  const out: string[] = [];
+interface TsConfig {
+  extends?: string | string[];
+  references?: { path?: string }[];
+  compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
+}
+
+/**
+ * `paths` of a tsconfig, following `extends` (relative ones, a few levels): the nearest config
+ * that sets `paths` wins, and its entries resolve against its own folder / baseUrl.
+ */
+function pathsOf(file: string, depth = 0): { base: string; paths: Record<string, string[]> } | null {
+  let cfg: TsConfig;
+  try {
+    cfg = readJsonc(file) as TsConfig;
+  } catch {
+    return null;
+  }
+  const dir = path.dirname(file);
+  if (cfg.compilerOptions?.paths) {
+    return { base: path.resolve(dir, cfg.compilerOptions.baseUrl ?? "."), paths: cfg.compilerOptions.paths };
+  }
+  if (depth >= 4) return null;
+  const parents = Array.isArray(cfg.extends) ? [...cfg.extends].reverse() : cfg.extends ? [cfg.extends] : [];
+  for (const e of parents) {
+    if (!e.startsWith(".")) continue; // package configs (@tsconfig/node20) have no workspace paths
+    const f = path.resolve(dir, e.endsWith(".json") ? e : `${e}.json`);
+    const hit = pathsOf(f, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Where the package's tsconfig*.json files point: references and paths (through extends). */
+function tsconfigRefs(dir: string): TsRef[] {
+  const out: TsRef[] = [];
   let files: string[] = [];
   try {
     files = readdirSync(dir).filter((f) => /^tsconfig.*\.json$/i.test(f));
@@ -36,24 +75,78 @@ function tsconfigRefs(dir: string): string[] {
     return out;
   }
   for (const f of files) {
+    const file = path.join(dir, f);
     try {
-      const cfg = readJsonc(path.join(dir, f)) as {
-        references?: { path?: string }[];
-        compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
-      };
-      for (const r of cfg.references ?? []) if (r.path) out.push(path.resolve(dir, r.path));
-      const base = path.resolve(dir, cfg.compilerOptions?.baseUrl ?? ".");
-      for (const targets of Object.values(cfg.compilerOptions?.paths ?? {})) {
-        for (const t of targets) {
-          const clean = t.replace(/\*.*$/, "");
-          if (clean) out.push(path.resolve(base, clean));
+      const cfg = readJsonc(file) as TsConfig;
+      for (const r of cfg.references ?? []) if (r.path) out.push({ dir: path.resolve(dir, r.path) });
+    } catch {
+      continue;
+    }
+    const p = pathsOf(file);
+    if (!p) continue;
+    for (const [alias, targets] of Object.entries(p.paths)) {
+      for (const t of targets) {
+        if (t.includes("*") && alias.includes("*")) {
+          out.push({ dir: path.resolve(p.base, t.replace(/\*.*$/, "")), wildcard: { alias, target: path.resolve(p.base, t) } });
+        } else if (t) {
+          out.push({ dir: path.resolve(p.base, t) });
         }
       }
-    } catch {
-      /* unreadable tsconfig */
     }
   }
   return out;
+}
+
+const importsCache = new Map<string, string[]>();
+
+/** Import specifiers in the package's source files (skips node_modules, build output). */
+function importsOf(dir: string): string[] {
+  const k = norm(dir);
+  const hit = importsCache.get(k);
+  if (hit !== undefined) return hit;
+  const found: string[] = [];
+  let files = 0;
+  const walk = (d: string) => {
+    let entries: import("node:fs").Dirent[] = [];
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (files > 5000) return;
+      if (e.isDirectory()) {
+        if (!/^(?:node_modules|dist|build|out|coverage|\..*)$/.test(e.name)) walk(path.join(d, e.name));
+      } else if (/\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(e.name)) {
+        files++;
+        try {
+          for (const m of readFileSync(path.join(d, e.name), "utf8").matchAll(/(?:from|import|require)\s*\(?\s*["']([^"']+)["']/g)) {
+            found.push(m[1]);
+          }
+        } catch {
+          /* unreadable */
+        }
+      }
+    }
+  };
+  walk(dir);
+  importsCache.set(k, found);
+  return found;
+}
+
+// Packages a wildcard path can reach that this package actually imports:
+// "@x/*": ["../../libs/*/src"] covers libs/b only when the source imports "@x/b".
+function importedThroughWildcard(pkgs: Pkg[], from: Pkg, ref: TsRef): Pkg[] {
+  const w = ref.wildcard!;
+  const [before] = w.target.split("*");
+  const imports = importsOf(from.dir);
+  return pkgs.filter((x) => {
+    const rel = path.relative(before, x.dir).replace(/\\/g, "/");
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+    const name = rel.split("/")[0];
+    const spec = w.alias.replace("*", name);
+    return imports.some((i) => i === spec || i.startsWith(`${spec}/`));
+  });
 }
 
 const cache = new Map<string, Pkg[]>();
@@ -285,10 +378,9 @@ function coveredBy(pkgs: Pkg[], dir: string): string[] {
       if (dep) todo.push(dep);
     }
     // connected only through tsconfig (`references`, `paths`), without a package.json dependency
-    // (`"@x/*": ["../../packages/*/src"]` points at a folder of packages: all of them)
+    // (a wildcard path reaches many packages: only the ones this package imports count)
     for (const ref of p.tsRefs) {
-      const under = pkgs.filter((x) => isUnder(x.dir, ref));
-      const deps = under.length ? under : [packageOf(pkgs, ref)].filter((x): x is Pkg => !!x);
+      const deps = ref.wildcard ? importedThroughWildcard(pkgs, p, ref) : [packageOf(pkgs, ref.dir)].filter((x): x is Pkg => !!x);
       for (const dep of deps) if (norm(dep.dir) !== norm(p.dir)) todo.push(dep);
     }
   }

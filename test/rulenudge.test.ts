@@ -428,10 +428,14 @@ describe("run a check before pushing", () => {
       path.join(repo, "apps", "api", "tsconfig.json"),
       '{\n  // types are built separately\n  "references": [{ "path": "../../packages/types" },],\n}\n',
     );
+    // web: wildcard paths inherited through extends; it imports @x/b, not @x/a
     writeFileSync(
-      path.join(repo, "apps", "web", "tsconfig.json"),
-      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@x/*": ["../../libs/*/src"] } } }),
+      path.join(repo, "tsconfig.base.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@x/*": ["libs/*/src"] } } }),
     );
+    writeFileSync(path.join(repo, "apps", "web", "tsconfig.json"), JSON.stringify({ extends: "../../tsconfig.base.json" }));
+    mkdirSync(path.join(repo, "apps", "web", "src"), { recursive: true });
+    writeFileSync(path.join(repo, "apps", "web", "src", "page.ts"), 'import { b } from "@x/b";\nexport const x = b;\n');
     commitClaudeMd("- Run `tsc --noEmit` before pushing.\n", Date.now() - 3 * DAY);
     const t = Date.now() - DAY;
     session("s1", repo, [
@@ -439,13 +443,15 @@ describe("run a check before pushing", () => {
       { bash: "pnpm --filter api type-check && git push", at: t + 100 },
       { tool: "Edit", file: path.join(repo, "libs", "b", "src", "index.ts"), at: t + 200 },
       { bash: "pnpm --filter web type-check && git push", at: t + 300 },
-      // web does not reach packages/types
-      { tool: "Edit", file: path.join(repo, "packages", "types", "index.ts"), at: t + 400 },
+      // web can reach libs/a through the wildcard, but does not import it
+      { tool: "Edit", file: path.join(repo, "libs", "a", "src", "index.ts"), at: t + 400 },
       { bash: "pnpm --filter web type-check && git push", at: t + 500 },
+      // web does not reach packages/types
+      { tool: "Edit", file: path.join(repo, "packages", "types", "index.ts"), at: t + 600 },
+      { bash: "pnpm --filter web type-check && git push", at: t + 700 },
     ]);
     const r = verdictOf("run-before");
-    expect(r?.violations).toHaveLength(1);
-    expect(r?.violations[0].what).toContain("packages/types");
+    expect(r?.violations.map((v) => v.what.match(/edited in (\S+),/)?.[1])).toEqual(["libs/a", "packages/types"]);
   });
 
   it("counts a pre-push hook that runs the check, unless hooks are skipped", () => {
@@ -475,15 +481,26 @@ describe("rules scoped to a branch, an environment or the main checkout", () => 
     expect(read("- 本番環境で `prisma migrate reset` を実行しない")).toEqual([]);
     expect(read("- Never edit `dist/` on the release branch.")).toEqual([]);
     expect(read("- Run `pnpm lint` before pushing to main.")).toEqual([]);
-    // not scopes: a file name with "main" in it, a folder
+    // not scopes: a file name with "main" in it, a folder, ordinary words
     expect(read("- Never edit `src/main.ts` by hand.")).toEqual(["protected-path:src/main.ts:"]);
     expect(read("- Never run `rm -rf` in the root folder.")).toEqual(["forbidden-cmd:rm -rf:"]);
+    expect(read("- Never run `terraform apply` to release infrastructure changes.")).toEqual(["forbidden-cmd:terraform apply:"]);
+    expect(read("- Never run `rm -rf` from the main menu script.")).toEqual(["forbidden-cmd:rm -rf:"]);
+    expect(read("- Never `git push --force` to main without asking.")).toEqual([]);
   });
 
   it("reads 'in the main checkout' as a rule for the main checkout only", () => {
     expect(
       read("- Don't `git switch`, `git reset`, or edit files in the main checkout, and don't touch another session's worktree or branch."),
     ).toEqual(["forbidden-cmd:git switch:main-checkout", "forbidden-cmd:git reset:main-checkout"]);
+    // other words for the same place
+    expect(read("- Don't `git switch` in the primary checkout.")).toEqual(["forbidden-cmd:git switch:main-checkout"]);
+    expect(read("- Don't `git switch` in the original working copy.")).toEqual(["forbidden-cmd:git switch:main-checkout"]);
+    expect(read("- Don't `git reset` in the root checkout.")).toEqual(["forbidden-cmd:git reset:main-checkout"]);
+    expect(read("- Don't `git reset` in the main worktree.")).toEqual(["forbidden-cmd:git reset:main-checkout"]);
+    expect(read("- 本体のチェックアウトで `git switch` しない")).toEqual(["forbidden-cmd:git switch:main-checkout"]);
+    // some other checkout: not judged
+    expect(read("- Don't `git reset` in the deploy checkout.")).toEqual([]);
   });
 
   it("flags the command in the main checkout, not in a linked worktree", () => {

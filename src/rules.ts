@@ -40,8 +40,16 @@ export interface RuleSet {
   uncheckable: Uncheckable[];
 }
 
-export const NEGATION =
-  /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited|avoid)\b|禁止|厳禁|不可|不採用|避ける|避けて|しない(?:こと|で)?|使わない|触らない|触れない|読まない|書かない|作らない|置かない|残さない|送らない|押さない|含めない|入れない|書き換えない|変えない|いじらない|消さない|行わない|やらない|走らせない|[てで]は(?:いけない|いけません|ならない|なりません|だめ|ダメ|駄目)|べきではない|べきでない/i;
+const NEG_EN = /\b(?:never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited|avoid)\b/i;
+const NEG_JA =
+  /禁止|厳禁|不可|不採用|避ける|避けて|しない(?:こと|で)?|使わない|触らない|触れない|読まない|書かない|作らない|置かない|残さない|送らない|押さない|含めない|入れない|書き換えない|変えない|いじらない|消さない|行わない|やらない|走らせない|[てで]は(?:いけない|いけません|ならない|なりません|だめ|ダメ|駄目)|べきではない|べきでない/;
+export const NEGATION = new RegExp(`${NEG_EN.source}|${NEG_JA.source}`, "i");
+// "only when …", "〜する場合は", "〜ないと": a condition, not a plain prohibition
+const CONDITIONAL = /\b(?:only when|only if|if|unless|when|while|in case)\b|場合|とき|時は|なら[、,\s]|ならば|限り|ないと/i;
+// "consider avoiding", "〜を避けることを検討", "なるべく"
+const HEDGE = /\b(?:consider|ideally|try to|if possible)\b|検討|なるべく|できれば|できるだけ|推奨/i;
+// "〜しない設定になっている", "〜でマスクしている": describes the system, not a rule for Claude
+const DESCRIPTION = /(?:ている|ていた|てある|てあります|ています|なっている|なっています|される|された|されている)[。．.]?$/;
 const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;
 const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const EDIT_VERB = /\b(?:edit|modify|change|touch|write|overwrite|update|hand-edit|alter)\b|編集|変更|書き換え|手で|触|修正|更新|いじ/i;
@@ -61,10 +69,10 @@ const EXEMPTION =
   /\b(?:can|may|okay|ok|fine|allowed to)\b[^.]*\bcommit|\b(?:don['’]t|do not|doesn['’]t|does not|no)\s+(?:need|require)|\bnot\s+(?:needed|required|necessary)\b|\bno need\b|\bCI\s+(?:will|runs?|handles?)\b|\boptional\b|不要|いらない|しなくて(?:も)?(?:いい|良い|よい|構わない)|(?:なく|なし|無し)でも(?:いい|良い|よい|構わない|OK)|でも構わない|省略(?:して|可)|任意/i;
 const JA_RULE_END =
   // (not 〜ではない / 〜れない / 〜できない: descriptions such as 「全許可ではない」「では行われない」)
-  /(?:(?<![でれきがはく])ない|ないこと|ないで(?:ください)?|ないように|てください|でください|すること|こと|べき|べからず|禁止|厳禁|不可|不採用|必須|厳守|徹底)[。．.！!]?$/;
+  /(?:許可されない|認められない|(?<![でれきがはく])ない|ないこと|ないで(?:ください)?|ないように|てください|でください|すること|こと|べき|べからず|禁止|厳禁|不可|不採用|必須|厳守|徹底)[。．.！!]?$/;
 const FILE_VERB = /\b(?:save|write|create|generate)s?\b|\bfiles?\b|保存|作成|生成|書き出|出力|ファイル/i;
 const CLAUSE_BREAK =/;|。|\binstead\b|\bbut\b|代わりに|ではなく/i;
-const CLAUSE_SPLIT = /[,;、]|\bbut\b|けど|けれど|が、/i;
+const CLAUSE_SPLIT = /[,;、（）()]|\bbut\b|けど|けれど|が、/i;
 const CLI =/^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;
 const PMS = ["npm", "pnpm", "yarn", "bun"] as const;
 
@@ -94,6 +102,33 @@ export function lineTimes(file: string): number[] | null {
   } catch {
     return null;
   }
+}
+
+/** The clause of `text` that holds `token` (split at , ; 、 brackets, but …). */
+function clauseOf(text: string, token: string): string {
+  return sentenceWith(text, token).split(CLAUSE_SPLIT).find((c) => c.includes(token)) ?? "";
+}
+
+/** A conditional, hedged or descriptive statement: not a rule rulenudge can hold Claude to. */
+function softened(clause: string, sentence: string): boolean {
+  return CONDITIONAL.test(clause) || HEDGE.test(clause) || DESCRIPTION.test(sentence.trim());
+}
+
+/**
+ * Is the command at `idx` (length `len`, including backticks) what the line forbids?
+ * English: a negation before it, in the same clause ("Never run `x`").
+ * Japanese: a prohibition right after it that ends the clause ("`x` を使ってはいけない"),
+ * not "`x` を見ても使わない情報" or "`x` の後、公開しない".
+ */
+function commandNegated(line: string, idx: number, len: number): boolean {
+  let last = -1;
+  for (const n of line.slice(0, idx).matchAll(new RegExp(NEG_EN.source, "gi"))) last = n.index ?? -1;
+  if (last >= 0 && idx - last <= 80 && !CLAUSE_BREAK.test(line.slice(last, idx))) return true;
+  const after = line.slice(idx + len);
+  const n = after.match(NEG_JA);
+  if (!n || (n.index ?? 0) > 12 || /[`、。,;；]/.test(after.slice(0, n.index))) return false;
+  const rest = after.slice((n.index ?? 0) + n[0].length);
+  return /^(?:こと|です|ください|で(?:ください)?|ように)?\s*(?:[。．.!！（(]|$)/.test(rest);
 }
 
 function negationIndex(line: string): number {
@@ -176,18 +211,8 @@ export function extractRulesFromText(
       if (BULLET.test(raw) || /^\*\*/.test(line)) {
         for (const m of line.matchAll(/`([^`]+)`/g)) {
           const cmd = m[1].trim();
-          const idx = m.index ?? 0;
-          if (idx < neg) {
-            // Japanese order: the command comes first ("`git push --force` を使ってはいけない").
-            // The prohibition must follow closely, with no other code span in between.
-            const after = line.slice(idx + m[0].length);
-            const n = after.match(NEGATION);
-            if (!n || (n.index ?? 0) > 12 || after.slice(0, n.index).includes("`")) continue;
-          } else {
-            if (idx - neg > 80) continue;
-            // "Don't hand-edit `x`; run `npm install` instead": the command is in another clause
-            if (CLAUSE_BREAK.test(line.slice(neg, idx))) continue;
-          }
+          if (!commandNegated(line, m.index ?? 0, m[0].length)) continue;
+          if (softened(clauseOf(base.text, m[0]), sentenceWith(base.text, m[0]))) continue;
           if (amendRule && /--amend\b/.test(cmd)) continue;
           if (!CLI.test(cmd)) continue;
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
@@ -199,9 +224,13 @@ export function extractRulesFromText(
           const p = m[1].trim();
           // a file type: "save as `.md` (`.txt` は不採用)", "Never create `.txt` files"
           if (/^\.[A-Za-z0-9]{1,8}$/.test(p) && !/^\.env$/i.test(p)) {
-            const clause = sentenceWith(base.text, "`" + m[1] + "`").split(CLAUSE_SPLIT).find((c) => c.includes("`" + m[1] + "`"));
+            const clause = clauseOf(base.text, m[0]);
             // "never commit `.log` output" bans committing, not the file type
-            if (clause && NEGATION.test(clause) && (FILE_VERB.test(clause) || (/不採用|禁止|厳禁|不可|使わない/.test(clause) && FILE_VERB.test(line)))) {
+            if (
+              NEGATION.test(clause) &&
+              !softened(clause, sentenceWith(base.text, m[0])) &&
+              (FILE_VERB.test(clause) || (/不採用|禁止|厳禁|不可|使わない/.test(clause) && FILE_VERB.test(line)))
+            ) {
               rules.push({ kind: "protected-path", value: `*${p}`, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
             }
             continue;
@@ -211,8 +240,8 @@ export function extractRulesFromText(
           // the negation and the edit verb must be in the same clause:
           // "You may hand-edit `dist/`, but never commit it" does not forbid editing
           // (the clause that holds this path — "never edit `dist/`, but you may regenerate `build/`")
-          const clause = sentence.split(CLAUSE_SPLIT).find((c) => c.includes("`" + m[1] + "`"));
-          if (!clause || !NEGATION.test(clause) || !EDIT_VERB.test(clause)) continue;
+          const clause = clauseOf(base.text, m[0]);
+          if (!NEGATION.test(clause) || !EDIT_VERB.test(clause) || softened(clause, sentence)) continue;
           rules.push({ kind: "protected-path", value: p.replace(/^\.\//, ""), ...base, text: sentence });
         }
       }
@@ -221,7 +250,9 @@ export function extractRulesFromText(
         rules.push({ kind: "forbidden-cmd", value: "gh pr merge", ...base, text: sentenceWith(base.text, /merge|マージ/i) });
       }
       // 3) secrets
-      if (/(^|[\s`'"(])\.env\b/.test(line)) {
+      const envSentence = sentenceWith(base.text, /\.env/);
+      // "`.env` の値はマスクしている" describes the code; it is not a rule for Claude
+      if (/(^|[\s`'"(])\.env\b/.test(line) && NEGATION.test(envSentence) && !softened(envSentence, envSentence)) {
         rules.push({ kind: "no-env", ...base, text: sentenceWith(base.text, /\.env/) });
       }
     }

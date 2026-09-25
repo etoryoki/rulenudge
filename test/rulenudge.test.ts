@@ -503,6 +503,30 @@ describe("rules command", () => {
     expect(read("- `pnpm test` が通らない場合は原因を調べる")).toEqual([]);
   });
 
+  it("does not read conditions, descriptions or other sentences as prohibitions", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    // the prohibition is about something else, in another clause or sentence
+    expect(read("- `npm run build` の後、公開しない。")).toEqual([]);
+    expect(read("- `docker ps` を見ても使わない情報だけ表示される。")).toEqual([]);
+    expect(read("- `git log` を見る。使わない情報は無視する。")).toEqual([]);
+    expect(read("- Prefer `pnpm add`; avoid `npm install` only when a lockfile conflict would result.")).toEqual([]);
+    // hedged, conditional or describing the system
+    expect(read("- 依存が壊れる場合は `npm install -g` を避けることを検討する。")).toEqual([]);
+    expect(read("- CI 環境では `npm run dev` を走らせない設定になっている。")).toEqual([]);
+    expect(read("- 確認ボタンを押さないと `git push` は実行されない。")).toEqual([]);
+    expect(read("- `.env` の値はログに残さないよう出力時にマスクしている。")).toEqual([]);
+    expect(read("- CI では `.env` の直接読み込みを避ける実装になっている。")).toEqual([]);
+    // a bracket is a clause: `.md` is the allowed type
+    expect(read("- 生成ファイルは `.md` で保存する（`.txt` は不採用）。")).toEqual(["protected-path:*.txt"]);
+    // still read
+    expect(read("- `.env` は読まない")).toEqual(["no-env:"]);
+    expect(read("- Never run `git push --force` or `git reset --hard`.")).toEqual([
+      "forbidden-cmd:git push --force",
+      "forbidden-cmd:git reset --hard",
+    ]);
+  });
+
   it("gives a rewrite hint for commands written without backticks", async () => {
     const { hintFor } = await import("../src/rulesCmd.js");
     expect(hintFor({ text: "Never git push --force to main", file: "x", line: 1 })).toContain("`git push --force to main`");

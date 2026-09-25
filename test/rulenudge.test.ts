@@ -261,6 +261,36 @@ describe("test before commit", () => {
   });
 });
 
+describe("amend after push", () => {
+  const rule = "- Never `git commit --amend` a commit that was already pushed.\n";
+
+  it("reads the rule as an order rule, not a ban on every amend", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => r.kind);
+    expect(read(rule.trim())).toEqual(["no-amend-pushed"]);
+    expect(read("- push 済みのコミットを amend しない")).toEqual(["no-amend-pushed"]);
+  });
+
+  it("flags an amend right after a push, also across sessions, but not after a new commit", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { bash: "git commit -m a && git push", at: t },
+      { bash: "git commit --amend --no-edit", at: t + 100 },
+    ]);
+    session("s2", repo, [
+      { bash: "git push origin main", at: t + 200 },
+      { bash: "git commit -m b", at: t + 300 },
+      { bash: "git commit --amend -m b2", at: t + 400 },
+    ]);
+    session("s3", repo, [{ bash: "git push -u origin main", at: t + 500 }]);
+    session("s4", repo, [{ bash: "git commit --amend --no-edit", at: t + 600 }]);
+    const r = verdictOf("no-amend-pushed");
+    expect(r?.verdict).toBe("violated");
+    expect(r?.violations.map((v) => v.sessionId)).toEqual(["s1", "s4"]);
+  });
+});
+
 describe("protected paths", () => {
   it("reads path rules, not commands or usage notes", () => {
     const read = (line: string) =>

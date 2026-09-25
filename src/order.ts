@@ -110,7 +110,52 @@ function fileOf(ev: ToolEvent): string | null {
   return typeof p === "string" ? normalizeMsysPath(p) : null;
 }
 
-export class TestBeforeCommitTracker {
+export interface OrderTracker {
+  step(ev: ToolEvent): OrderHit | null;
+}
+
+/**
+ * "Never amend a pushed commit": after `git push`, the next `git commit --amend` in the same
+ * checkout (with no new commit in between) rewrites a pushed commit. Push state belongs to the
+ * checkout, so it is tracked across sessions (events are processed in time order).
+ */
+export class AmendAfterPushTracker implements OrderTracker {
+  private pushed = new Map<string, boolean>();
+
+  constructor(private readonly scope: string | null) {}
+
+  step(ev: ToolEvent): OrderHit | null {
+    if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
+    for (const c of commandsWithCwd(ev.input.command, ev.cwd)) {
+      const root = worktreeRoot(c.cwd);
+      if (!root || (this.scope && !isUnder(root, this.scope) && !isUnder(this.scope, root))) continue;
+      const k = norm(root);
+      if (/^git\s+push\b/.test(c.text)) {
+        // a failed push (non-zero exit) pushed nothing
+        if (ev.isError !== true) this.pushed.set(k, true);
+        continue;
+      }
+      if (!COMMIT.test(c.text)) continue;
+      if (/--amend\b/.test(c.text)) {
+        const wasPushed = this.pushed.get(k) === true;
+        this.pushed.set(k, false);
+        if (wasPushed) {
+          return {
+            ts: ev.ts,
+            sessionId: ev.sessionId,
+            what: `${unquote(c.text).slice(0, 80)}  (the last commit had already been pushed)`,
+            unclear: /amend|アメンド/i.test(ev.lastUserText),
+          };
+        }
+      } else {
+        this.pushed.set(k, false);
+      }
+    }
+    return null;
+  }
+}
+
+export class TestBeforeCommitTracker implements OrderTracker {
   /** key = sessionId|repoRoot → the code changed since the last test run / commit */
   private dirty = new Map<string, boolean>();
   /** key → the latest test run since the last change failed (only tracked for "must pass" rules) */

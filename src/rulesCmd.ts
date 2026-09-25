@@ -29,6 +29,8 @@ export function describeRule(r: Rule): string {
       return `uses ${r.value} (not other package managers)`;
     case "worktree-only":
       return "works in a git worktree, not the main checkout";
+    case "no-amend-pushed":
+      return "never amends a commit that was already pushed";
     case "protected-path":
       return `never edits \`${r.value}\``;
     case "test-before-commit":

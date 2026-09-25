@@ -4,11 +4,11 @@
 //   followed   - the rule was active during at least one session, no violations
 //   not-applicable - the rule did not exist yet / no session ran under it
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { inMainCheckout, isUnder, norm, repoInfo } from "./git.js";
+import { inMainCheckout, isUnder, norm, repoInfo, worktreeRoot } from "./git.js";
 import { AmendAfterPushTracker, type OrderTracker, TestBeforeCommitTracker } from "./order.js";
 import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
@@ -232,7 +232,8 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
       }
     }
     if (rule.kind === "protected-path" && WRITE_TOOLS.has(ev.tool)) {
-      const rel = root ? path.relative(root, file).replace(/\\/g, "/") : path.basename(file);
+      // a global rule (~/.claude/CLAUDE.md) has no folder of its own: use the file's repository
+      const rel = root ? path.relative(root, file).replace(/\\/g, "/") : repoRelative(file) ?? path.basename(file);
       if (matchesPath(rel, rule.value!)) {
         return { what: `${ev.tool} ${file}`, keywords: [path.basename(file), rule.value!.replace(/[*/]+$/g, "")] };
       }
@@ -344,6 +345,26 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
   };
 }
 
+/** Path of `file` inside its repository. The file (and its folder) may not exist yet. */
+function repoRelative(file: string): string | null {
+  let dir = path.dirname(file);
+  while (!existsSync(dir)) {
+    const up = path.dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+  const root = worktreeRoot(dir);
+  if (!root) return null;
+  try {
+    // compare real paths (git prints /private/var on macOS, long names on Windows)
+    const inside = path.relative(realpathSync.native(root), realpathSync.native(dir));
+    if (inside.startsWith("..") || path.isAbsolute(inside)) return null;
+    return path.join(inside, path.relative(dir, file)).replace(/\\/g, "/");
+  } catch {
+    return null;
+  }
+}
+
 function globToRegExp(glob: string): RegExp {
   let re = "";
   for (let i = 0; i < glob.length; i++) {
@@ -357,7 +378,7 @@ function globToRegExp(glob: string): RegExp {
     } else if (ch === "?") re += "[^/]";
     else re += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   }
-  return new RegExp(`^${re}$`, "i");
+  return new RegExp(`^${re}$`);
 }
 
 /**
@@ -365,18 +386,20 @@ function globToRegExp(glob: string): RegExp {
  * `dist/` or `dist` → the folder and everything in it; `*.lock` / `package-lock.json`
  * (no slash) → a file of that name anywhere; `src/gen/**` → glob from the root.
  */
-export function matchesPath(rel: string, pattern: string): boolean {
-  const p = pattern.replace(/\\/g, "/").replace(/^\.?\//, "");
-  const r = rel.replace(/\\/g, "/");
+export function matchesPath(rel: string, pattern: string, caseSensitive = process.platform === "linux"): boolean {
+  // Windows and macOS file systems ignore case by default; Linux does not
+  const fold = (s: string) => (caseSensitive ? s : s.toLowerCase());
+  const p = fold(pattern.replace(/\\/g, "/").replace(/^\.?\//, ""));
+  const r = fold(rel.replace(/\\/g, "/"));
   if (!p.includes("/") ) {
     const base = r.split("/").pop() ?? r;
     if (/[*?]/.test(p)) return globToRegExp(p).test(base);
     // a bare name: a file with that name, or a folder with that name anywhere in the path
-    return base.toLowerCase() === p.toLowerCase() || r.toLowerCase().split("/").slice(0, -1).includes(p.toLowerCase());
+    return base === p || r.split("/").slice(0, -1).includes(p);
   }
-  if (p.endsWith("/")) return r.toLowerCase().startsWith(p.toLowerCase());
+  if (p.endsWith("/")) return r.startsWith(p);
   if (/[*?]/.test(p)) return globToRegExp(p).test(r);
-  return r.toLowerCase() === p.toLowerCase() || r.toLowerCase().startsWith(p.toLowerCase() + "/");
+  return r === p || r.startsWith(p + "/");
 }
 
 function sameRepo(a: string, b: string): boolean {

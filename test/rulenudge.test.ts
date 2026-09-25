@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -270,6 +270,17 @@ describe("commit message format", () => {
     expect(read("- Commit messages in English.")).toEqual(["commit-format:english"]);
     expect(read("- コミットメッセージは英語で書く")).toEqual(["commit-format:english"]);
     expect(read("- Commit messages may be in Japanese.")).toEqual([]);
+    expect(read("- Commit messages don't need to follow Conventional Commits for WIP branches.")).toEqual([]);
+  });
+
+  it("reads every commit on a line joined with &&", async () => {
+    const { commitSubjects } = await import("../src/shell.js");
+    expect(commitSubjects('git commit -m "feat: first" && git commit -m "bad message"')).toEqual([
+      "feat: first",
+      "bad message",
+    ]);
+    expect(commitSubjects('git commit -a && git commit -m "x"')).toEqual(["x"]);
+    expect(commitSubjects("git commit -F - <<'EOF' && git push\nfix: y\nEOF")).toEqual(["fix: y"]);
   });
 
   it("flags messages that break the format, from -m and heredocs", () => {
@@ -302,6 +313,23 @@ describe("amend after push", () => {
       extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => r.kind);
     expect(read(rule.trim())).toEqual(["no-amend-pushed"]);
     expect(read("- push 済みのコミットを amend しない")).toEqual(["no-amend-pushed"]);
+    // other rules on the same line survive; the opposite order is not this rule
+    expect(read("- Never `git push --force` or amend a commit that has already been pushed.").sort()).toEqual([
+      "forbidden-cmd",
+      "no-amend-pushed",
+    ]);
+    expect(read("- Never push after amending a commit that has not been reviewed yet.")).toEqual([]);
+  });
+
+  it("does not judge an amend after HEAD moved to another commit", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { bash: "git commit -m a && git push", at: t },
+      { bash: "git switch -c other && git cherry-pick abc123", at: t + 100 },
+      { bash: "git commit --amend -m fixed", at: t + 200 },
+    ]);
+    expect(verdictOf("no-amend-pushed")?.violations ?? []).toHaveLength(0);
   });
 
   it("flags an amend right after a push, also across sessions, but not after a new commit", () => {
@@ -345,6 +373,28 @@ describe("protected paths", () => {
     expect(matchesPath("pnpm-lock.yaml", "*.lock")).toBe(false);
     expect(matchesPath("src/gen/a/b.ts", "src/gen/**")).toBe(true);
     expect(matchesPath("package-lock.json", "package-lock.json")).toBe(true);
+    expect(matchesPath("Dist/a.js", "dist/", true)).toBe(false);
+    expect(matchesPath("Dist/a.js", "dist/", false)).toBe(true);
+  });
+
+  it("does not read 'may edit …, but never commit' as a ban on editing", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    expect(read("- You may hand-edit `dist/` locally for testing, but never commit those changes without review.")).toEqual([]);
+    // the recommended command in the other clause is not forbidden
+    expect(read("- Don't hand-edit `package-lock.json`; run `npm install` instead to regenerate it.")).toEqual([
+      "protected-path:package-lock.json",
+    ]);
+  });
+
+  it("checks folder patterns from the global CLAUDE.md against the file's repository", () => {
+    const global = path.join(home, ".claude", "CLAUDE.md");
+    mkdirSync(path.dirname(global), { recursive: true });
+    writeFileSync(global, "- Never edit `dist/` by hand.\n");
+    const old = new Date(Date.now() - 3 * DAY);
+    utimesSync(global, old, old);
+    session("s1", repo, [{ tool: "Write", file: path.join(repo, "dist", "a.js"), at: Date.now() - DAY }]);
+    expect(verdictOf("protected-path")?.verdict).toBe("violated");
   });
 
   it("flags an edit inside a protected folder", () => {

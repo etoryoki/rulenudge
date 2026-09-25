@@ -58,7 +58,9 @@ const ORDER_WORD = /\bbefore\b|\bpass(?:es|ing)?\b|\bgreen\b|\bwithout\b|前に|
 // "you can commit before running the suite; CI will run the tests") — never turn them into rules
 const EXEMPTION =
   /\b(?:can|may|okay|ok|fine|allowed to)\b[^.]*\bcommit|\b(?:don['’]t|do not|doesn['’]t|does not|no)\s+(?:need|require)|\bnot\s+(?:needed|required|necessary)\b|\bno need\b|\bCI\s+(?:will|runs?|handles?)\b|\boptional\b|不要|いらない|しなくて(?:も)?(?:いい|良い|よい|構わない)|(?:なく|なし|無し)でも(?:いい|良い|よい|構わない|OK)|でも構わない|省略(?:して|可)|任意/i;
-const CLI = /^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;
+const CLAUSE_BREAK = /;|。|\binstead\b|\bbut\b|代わりに|ではなく/i;
+const CLAUSE_SPLIT = /[,;、]|\bbut\b|けど|けれど|が、/i;
+const CLI =/^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;
 const PMS = ["npm", "pnpm", "yarn", "bun"] as const;
 
 /** When was each line written? git blame author-time, falling back to file mtime. */
@@ -138,7 +140,7 @@ export function extractRulesFromText(
     }
 
     // 0a) commit message format: Conventional Commits / English
-    if (ruleLine && /commit messages?|commit subject|コミットメッセージ/i.test(line)) {
+    if (ruleLine && /commit messages?|commit subject|コミットメッセージ/i.test(line) && !EXEMPTION.test(line)) {
       const text = sentenceWith(base.text, /commit|コミット/i);
       let matched = false;
       if (/conventional\s*commits?/i.test(line) || /`(?:feat|fix|chore|docs)(?:\([^)`]*\))?:?`/.test(line)) {
@@ -152,11 +154,16 @@ export function extractRulesFromText(
       if (matched) return;
     }
 
-    // 0b) order rule: don't amend commits that were already pushed. Checked before forbidden
-    // commands so "never `git commit --amend` a pushed commit" does not forbid every amend.
-    if (ruleLine && isNegated && /amend|アメンド/i.test(line) && /push|プッシュ/i.test(line)) {
-      rules.push({ kind: "no-amend-pushed", ...base, text: sentenceWith(base.text, /amend|アメンド/i) });
-      return;
+    // 0b) order rule: don't amend commits that were already pushed ("pushed", "push 済み" —
+    // not "never push after amending"). The same line may hold other rules, so no return;
+    // the amend command itself is then not read as a forbidden command.
+    let amendRule = false;
+    if (ruleLine && isNegated) {
+      const s = sentenceWith(base.text, /amend|アメンド/i);
+      if (/amend|アメンド/i.test(s) && /\bpushed\b|push\s*済|プッシュ済|pushした|プッシュした/i.test(s) && NEGATION.test(s) && !EXEMPTION.test(s)) {
+        rules.push({ kind: "no-amend-pushed", ...base, text: s });
+        amendRule = true;
+      }
     }
 
     if (isNegated) {
@@ -166,6 +173,9 @@ export function extractRulesFromText(
           const cmd = m[1].trim();
           const idx = m.index ?? 0;
           if (idx < neg || idx - neg > 80) continue;
+          // "Don't hand-edit `x`; run `npm install` instead": the command is in another clause
+          if (CLAUSE_BREAK.test(line.slice(neg, idx))) continue;
+          if (amendRule && /--amend\b/.test(cmd)) continue;
           if (!CLI.test(cmd)) continue;
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
           if (cmd.split(/\s+/).length > 4) continue;
@@ -176,7 +186,10 @@ export function extractRulesFromText(
           const p = m[1].trim();
           if (!looksLikePath(p) || CLI.test(p) || /^\.env\b/.test(p)) continue;
           const sentence = sentenceWith(base.text, "`" + m[1] + "`");
-          if (!NEGATION.test(sentence) || !EDIT_VERB.test(sentence)) continue;
+          // the negation and the edit verb must be in the same clause:
+          // "You may hand-edit `dist/`, but never commit it" does not forbid editing
+          const clauses = sentence.split(CLAUSE_SPLIT);
+          if (!clauses.some((c) => NEGATION.test(c) && EDIT_VERB.test(c))) continue;
           rules.push({ kind: "protected-path", value: p.replace(/^\.\//, ""), ...base, text: sentence });
         }
       }

@@ -135,15 +135,17 @@ export function commandsWithCwd(input: string, baseCwd: string): SimpleCommand[]
  */
 export function commitSubjects(raw: string): string[] {
   const out: string[] = [];
-  const re = /\bgit\b(?:\s+-c\s+\S+|\s+-C\s+\S+|\s+--no-pager)*\s+commit\b([^\n]*)/g;
+  // args stop at && / || / ; so a second `git commit` on the same line is found too
+  const re = /\bgit\b(?:\s+-c\s+\S+|\s+-C\s+\S+|\s+--no-pager)*\s+commit\b((?:(?!&&|\|\||;)[^\n])*)/g;
   for (const m of raw.matchAll(re)) {
     const args = m[1];
     if (/--no-edit\b/.test(args)) continue;
     // the flag is on the commit line; a quoted message may continue over several lines
     const rest = raw.slice((m.index ?? 0) + m[0].length - args.length);
-    const quoted = rest.match(/^[^\n]*?(?:^|\s)(?:-[a-zA-Z]*m|--message)(?:=|\s+)(["'])((?:\\[\s\S]|(?!\1)[\s\S])*)\1/);
-    if (quoted) {
-      const lines = quoted[2].replace(/\\n/g, "\n").split(/\r?\n/);
+    const quoted = rest.match(/^([^\n]*?)(?:^|\s)(?:-[a-zA-Z]*m|--message)(?:=|\s+)(["'])((?:\\[\s\S]|(?!\2)[\s\S])*)\2/);
+    // the flag must belong to this commit, not to a later command on the same line
+    if (quoted && quoted[1].length < args.length) {
+      const lines = quoted[3].replace(/\\n/g, "\n").split(/\r?\n/);
       // -m "$(cat <<'EOF' … EOF )": the subject is the first line of the heredoc body
       const sub = lines[0].match(/^\$\(\s*cat\s+<<-?\s*(['"]?)([A-Za-z_]\w*)\1\s*$/);
       const body = sub ? lines.slice(1, lines.findIndex((l, j) => j > 0 && l.trim() === sub[2])) : lines;
@@ -154,8 +156,10 @@ export function commitSubjects(raw: string): string[] {
     if (/(?:^|\s)-F\s+-|--file[=\s]+-/.test(args)) {
       const heredoc = args.match(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1/);
       if (!heredoc) continue;
-      const after = raw.slice((m.index ?? 0) + m[0].length);
-      const body = after.replace(/^\r?\n/, "").split(new RegExp(`^\\s*${heredoc[2]}\\s*$`, "m"))[0];
+      // the heredoc body starts on the line after the command (`… <<'EOF' && git push`)
+      const nl = raw.indexOf("\n", (m.index ?? 0) + m[0].length);
+      if (nl === -1) continue;
+      const body = raw.slice(nl + 1).split(new RegExp(`^\\s*${heredoc[2]}\\s*$`, "m"))[0];
       const first = body.split(/\r?\n/).find((l) => l.trim());
       if (first) out.push(first.trim());
     }

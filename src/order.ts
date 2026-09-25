@@ -110,6 +110,8 @@ function fileOf(ev: ToolEvent): string | null {
   return typeof p === "string" ? normalizeMsysPath(p) : null;
 }
 
+const HEAD_MOVE = /^git\s+(?:checkout|switch|cherry-pick|merge|rebase|revert|pull|am|reset)\b/;
+
 export interface OrderTracker {
   step(ev: ToolEvent): OrderHit | null;
 }
@@ -133,6 +135,12 @@ export class AmendAfterPushTracker implements OrderTracker {
       if (/^git\s+push\b/.test(c.text)) {
         // a failed push (non-zero exit) pushed nothing
         if (ev.isError !== true) this.pushed.set(k, true);
+        continue;
+      }
+      // HEAD moved to a commit we know nothing about (another branch, a cherry-pick, a rebase …):
+      // whether it was pushed is unknown, so an amend after this is not judged
+      if (HEAD_MOVE.test(c.text)) {
+        this.pushed.delete(k);
         continue;
       }
       if (!COMMIT.test(c.text)) continue;

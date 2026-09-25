@@ -141,6 +141,21 @@ describe("test before commit", () => {
     expect(read("- Tests live in packages/*/test.")).toEqual([]);
   });
 
+  it("never reads exemptions as the rule (CTO review)", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.filter((r) => r.kind === "test-before-commit");
+    for (const line of [
+      "- You can commit before running the full test suite locally; CI will run the tests.",
+      "- Docs-only commits do not need tests first.",
+      "- This is the first commit; tests will follow in the next PR.",
+      "- Do not require tests before every commit for typo fixes.",
+      "- ドキュメントだけのコミットはテストなしでも構わない",
+      "- 軽微な修正はコミット前のテストは不要",
+    ]) {
+      expect(read(line), line).toEqual([]);
+    }
+  });
+
   it("flags a commit after code edits with no test run, and accepts one after tests", () => {
     commitClaudeMd(rule, Date.now() - 3 * DAY);
     withTests();

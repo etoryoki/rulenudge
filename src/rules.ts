@@ -40,7 +40,11 @@ const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;
 const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const TEST_WORD = /\btests?\b|テスト/i;
 const COMMIT_WORD = /\bcommit(?:s|ting)?\b|コミット/i;
-const ORDER_WORD = /\bbefore\b|\bfirst\b|\bpass(?:es|ing)?\b|\bgreen\b|\bwithout\b|前に|前は|してから|通って|通して|通過|なしで|せずに/i;
+const ORDER_WORD = /\bbefore\b|\bpass(?:es|ing)?\b|\bgreen\b|\bwithout\b|前に|前は|してから|通って|通して|通過|なしで|せずに/i;
+// exemptions read like the rule but mean the opposite ("docs-only commits do not need tests",
+// "you can commit before running the suite; CI will run the tests") — never turn them into rules
+const EXEMPTION =
+  /\b(?:can|may|okay|ok|fine|allowed to)\b[^.]*\bcommit|\b(?:don['’]t|do not|doesn['’]t|does not|no)\s+(?:need|require)|\bnot\s+(?:needed|required|necessary)\b|\bno need\b|\bCI\s+(?:will|runs?|handles?)\b|\boptional\b|不要|いらない|しなくて(?:も)?(?:いい|良い|よい|構わない)|(?:なく|なし|無し)でも(?:いい|良い|よい|構わない|OK)|でも構わない|省略(?:して|可)|任意/i;
 const CLI = /^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;
 const PMS = ["npm", "pnpm", "yarn", "bun"] as const;
 
@@ -104,7 +108,7 @@ export function extractRulesFromText(
     // 0) order rule: run tests before committing ("commit 前にテスト", "never commit without
     // running `pnpm test`"). Checked first so the test command is not read as a forbidden one.
     const ruleLine = BULLET.test(raw) || /^\*\*/.test(line);
-    if (ruleLine && TEST_WORD.test(line) && COMMIT_WORD.test(line) && ORDER_WORD.test(line)) {
+    if (ruleLine && TEST_WORD.test(line) && COMMIT_WORD.test(line) && ORDER_WORD.test(line) && !EXEMPTION.test(line)) {
       const explicit = [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()).find((c) => /test|vitest|jest|pytest/i.test(c));
       rules.push({ kind: "test-before-commit", value: explicit, ...base });
       return;

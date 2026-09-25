@@ -40,7 +40,7 @@ export interface RuleSet {
   uncheckable: Uncheckable[];
 }
 
-export const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|触れない|読まない|実行しない|書き換えない|変えない|いじらない|消さない|入れない/i;
+export const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|触れない|読まない|実行しない|書き換えない|変えない|いじらない|消さない|入れない|してはいけない|してはならない|してはダメ|しては駄目|べきではない|べきでない|行わない|やらない/i;
 const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;
 const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const EDIT_VERB = /\b(?:edit|modify|change|touch|write|overwrite|update|hand-edit|alter)\b|編集|変更|書き換え|手で|触|修正|更新|いじ/i;
@@ -188,8 +188,9 @@ export function extractRulesFromText(
           const sentence = sentenceWith(base.text, "`" + m[1] + "`");
           // the negation and the edit verb must be in the same clause:
           // "You may hand-edit `dist/`, but never commit it" does not forbid editing
-          const clauses = sentence.split(CLAUSE_SPLIT);
-          if (!clauses.some((c) => NEGATION.test(c) && EDIT_VERB.test(c))) continue;
+          // (the clause that holds this path — "never edit `dist/`, but you may regenerate `build/`")
+          const clause = sentence.split(CLAUSE_SPLIT).find((c) => c.includes("`" + m[1] + "`"));
+          if (!clause || !NEGATION.test(clause) || !EDIT_VERB.test(clause)) continue;
           rules.push({ kind: "protected-path", value: p.replace(/^\.\//, ""), ...base, text: sentence });
         }
       }

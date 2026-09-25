@@ -313,6 +313,7 @@ describe("amend after push", () => {
       extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => r.kind);
     expect(read(rule.trim())).toEqual(["no-amend-pushed"]);
     expect(read("- push 済みのコミットを amend しない")).toEqual(["no-amend-pushed"]);
+    expect(read("- push 済みのコミットを amend してはいけない。")).toEqual(["no-amend-pushed"]);
     // other rules on the same line survive; the opposite order is not this rule
     expect(read("- Never `git push --force` or amend a commit that has already been pushed.").sort()).toEqual([
       "forbidden-cmd",
@@ -381,6 +382,8 @@ describe("protected paths", () => {
     const read = (line: string) =>
       extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
     expect(read("- You may hand-edit `dist/` locally for testing, but never commit those changes without review.")).toEqual([]);
+    expect(read("- Never edit `dist/`, but you may regenerate `build/` freely.")).toEqual(["protected-path:dist/"]);
+    expect(read("- `generated/` は手で編集してはいけない")).toEqual(["protected-path:generated/"]);
     // the recommended command in the other clause is not forbidden
     expect(read("- Don't hand-edit `package-lock.json`; run `npm install` instead to regenerate it.")).toEqual([
       "protected-path:package-lock.json",

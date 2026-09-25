@@ -215,6 +215,39 @@ describe("test before commit", () => {
     expect(verdictOf("test-before-commit")?.verdict).toBe("followed");
   });
 
+  it("with 'tests must pass', a commit after a failed run is a violation", () => {
+    commitClaudeMd("- Make sure the tests pass before committing.\n", Date.now() - 3 * DAY);
+    withTests();
+    const t = Date.now() - DAY;
+    const dir = path.join(projects, encodeProjectDir(repo));
+    mkdirSync(dir, { recursive: true });
+    const line = (o: object) => JSON.stringify({ sessionId: "p1", cwd: repo, timestamp: new Date(t).toISOString(), ...o });
+    writeFileSync(
+      path.join(dir, "p1.jsonl"),
+      [
+        line({ type: "assistant", message: { content: [{ type: "tool_use", id: "e1", name: "Edit", input: { file_path: path.join(repo, "a.ts") } }] } }),
+        line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "pnpm test" } }] } }),
+        line({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "Exit code 1" }] } }),
+        line({ type: "assistant", message: { content: [{ type: "tool_use", id: "c1", name: "Bash", input: { command: "git commit -m x" } }] } }),
+      ].join("\n") + "\n",
+    );
+    const r = verdictOf("test-before-commit");
+    expect(r?.verdict).toBe("violated");
+    expect(r?.violations[0].what).toContain("the last test run failed");
+  });
+
+  it("finds test scripts in monorepo packages", async () => {
+    const { hasTestSetup } = await import("../src/order.js");
+    mkdirSync(path.join(repo, "packages", "core"), { recursive: true });
+    writeFileSync(path.join(repo, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }));
+    expect(hasTestSetup(repo)).toBe(false);
+    const mono = path.join(home, "mono");
+    mkdirSync(path.join(mono, "packages", "core"), { recursive: true });
+    writeFileSync(path.join(mono, "package.json"), JSON.stringify({ scripts: { build: "tsc" } }));
+    writeFileSync(path.join(mono, "packages", "core", "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+    expect(hasTestSetup(mono)).toBe(true);
+  });
+
   it("is unclear when the user asked to commit without tests", () => {
     commitClaudeMd(rule, Date.now() - 3 * DAY);
     withTests();

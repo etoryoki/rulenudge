@@ -22,6 +22,8 @@ export interface Rule {
   line: number;
   /** When this line was written (ms). Actions before this are not judged. */
   since: number;
+  /** test-before-commit: the rule asks for passing tests, not just a test run. */
+  pass?: boolean;
 }
 
 export interface Uncheckable {
@@ -119,7 +121,8 @@ export function extractRulesFromText(
     const ruleLine = BULLET.test(raw) || /^\*\*/.test(line);
     if (ruleLine && TEST_WORD.test(line) && COMMIT_WORD.test(line) && ORDER_WORD.test(line) && !EXEMPTION.test(line)) {
       const explicit = [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()).find((c) => /test|vitest|jest|pytest/i.test(c));
-      rules.push({ kind: "test-before-commit", value: explicit, ...base, text: sentenceWith(base.text, COMMIT_WORD) });
+      const pass = /\bpass(?:es|ing)?\b|\bgreen\b|\bsucceed|通って|通して|通す|通過|成功|グリーン/i.test(line);
+      rules.push({ kind: "test-before-commit", value: explicit, ...base, text: sentenceWith(base.text, COMMIT_WORD), pass });
       return;
     }
 

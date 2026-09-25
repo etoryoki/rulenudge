@@ -14,6 +14,8 @@ export interface ToolEvent {
   input: Record<string, unknown>;
   /** The latest few human-typed messages in this session before the tool call. */
   lastUserText: string;
+  /** The tool result was an error (for shell tools: non-zero exit). Undefined if unknown. */
+  isError?: boolean;
 }
 
 export interface SessionInfo {
@@ -92,6 +94,7 @@ function readFile(fp: string, opts: ReadOptions, events: ToolEvent[], sessions: 
     return;
   }
   const recentUser: string[] = [];
+  const byId = new Map<string, ToolEvent>();
   let info: SessionInfo | null = null;
   for (const line of raw.split("\n")) {
     if (!line || line[0] !== "{") continue;
@@ -110,6 +113,17 @@ function readFile(fp: string, opts: ReadOptions, events: ToolEvent[], sessions: 
       info = { sessionId, cwd, firstTs: ts };
     }
     if (e.type === "user") {
+      // results of earlier tool calls: remember which ones failed
+      const blocks = (e.message as { content?: unknown } | undefined)?.content;
+      if (Array.isArray(blocks)) {
+        for (const b of blocks) {
+          if (b && typeof b === "object" && (b as { type?: string }).type === "tool_result") {
+            const r = b as { tool_use_id?: string; is_error?: boolean };
+            const ev = r.tool_use_id ? byId.get(r.tool_use_id) : undefined;
+            if (ev) ev.isError = r.is_error === true;
+          }
+        }
+      }
       const t = humanText(e.message);
       if (t !== null) {
         recentUser.push(t);
@@ -123,14 +137,17 @@ function readFile(fp: string, opts: ReadOptions, events: ToolEvent[], sessions: 
     for (const c of content) {
       if (!c || typeof c !== "object" || (c as { type?: string }).type !== "tool_use") continue;
       const tu = c as { name?: string; input?: Record<string, unknown> };
-      events.push({
+      const ev: ToolEvent = {
         ts,
         sessionId,
         cwd,
         tool: String(tu.name ?? ""),
         input: tu.input ?? {},
         lastUserText: recentUser.join("\n"),
-      });
+      };
+      events.push(ev);
+      const id = (c as { id?: string }).id;
+      if (id) byId.set(id, ev);
     }
   }
   if (info && info.firstTs >= opts.since) sessions.push(info);

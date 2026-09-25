@@ -3,7 +3,7 @@
 // repository: one session often edits several repositories (`cd` between them), and a
 // per-session flag would blame a commit in repo A for an untested edit in repo B.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { isUnder, norm, worktreeRoot } from "./git.js";
@@ -42,6 +42,29 @@ export function hasTestSetup(root: string): boolean {
     found = !!test && !/no test specified/i.test(test);
   } catch {
     /* no package.json */
+  }
+  if (!found) {
+    // monorepo: no test script at the root, but in workspace packages (apps/*, packages/*, …)
+    for (const group of ["apps", "packages", "services", "libs", "modules"]) {
+      let names: string[] = [];
+      try {
+        names = readdirSync(path.join(root, group));
+      } catch {
+        continue;
+      }
+      found = names.some((n) => {
+        try {
+          const pkg = JSON.parse(readFileSync(path.join(root, group, n, "package.json"), "utf8")) as {
+            scripts?: Record<string, string>;
+          };
+          const t = pkg.scripts?.test ?? "";
+          return !!t && !/no test specified/i.test(t);
+        } catch {
+          return false;
+        }
+      });
+      if (found) break;
+    }
   }
   if (!found) {
     found = ["pytest.ini", "tox.ini", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts", "Gemfile"].some(
@@ -90,6 +113,8 @@ function fileOf(ev: ToolEvent): string | null {
 export class TestBeforeCommitTracker {
   /** key = sessionId|repoRoot → the code changed since the last test run / commit */
   private dirty = new Map<string, boolean>();
+  /** key → the latest test run since the last change failed (only tracked for "must pass" rules) */
+  private failed = new Map<string, boolean>();
 
   constructor(
     private readonly rule: Rule,
@@ -116,17 +141,26 @@ export class TestBeforeCommitTracker {
       if (!root || !this.inScope(root)) continue;
       const k = `${ev.sessionId}|${norm(root)}`;
       if (isTestCommand(c.text, this.rule.value)) {
-        this.dirty.set(k, false);
+        // "tests must pass": a failed run leaves the change untested. (A pipe such as
+        // `npm test | tail` hides the exit code; then the run counts as passed.)
+        if (this.rule.pass && ev.isError === true) {
+          this.failed.set(k, true);
+        } else {
+          this.dirty.set(k, false);
+          this.failed.set(k, false);
+        }
         continue;
       }
       if (COMMIT.test(c.text) && !/--amend\b/.test(c.text)) {
         const wasDirty = this.dirty.get(k) === true;
+        const failed = this.failed.get(k) === true;
         this.dirty.set(k, false);
+        this.failed.set(k, false);
         if (!wasDirty) continue;
         return {
           ts: ev.ts,
           sessionId: ev.sessionId,
-          what: `${unquote(c.text).slice(0, 80)}  (files were edited in this session, no test run since)`,
+          what: `${unquote(c.text).slice(0, 80)}  (${failed ? "the last test run failed" : "files were edited in this session, no test run since"})`,
           unclear: userSkippedTests(ev),
         };
       }

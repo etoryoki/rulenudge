@@ -85,6 +85,7 @@ rulenudge only judges rules it can check without guessing. Everything else is co
 | `- Always work in a git worktree, never in the main checkout` | edits files or runs `git switch/commit/reset/…` in the main checkout |
 | ``- Never edit `dist/` `` / `` `*.lock` を手で書き換えない `` | edits or writes a file under that path with a file tool (Edit/Write). Folders (`dist/`), globs (`src/gen/**`, `*.lock`) and file names (`package-lock.json`) |
 | `- Never amend a commit that was already pushed` / `push 済みのコミットを amend しない` | runs `git commit --amend` after a `git push` in that checkout with no new commit in between (tracked across sessions) |
+| `- Write commit messages as Conventional Commits` / `コミットメッセージは英語で書く` | commits with a subject that is not `type(scope): …` (feat, fix, docs, chore, …) / that contains Japanese text. The message is read from `-m`, `-m "$(cat <<'EOF' …)"` and `-F - <<EOF`; merge, revert and fixup commits are skipped |
 | `- Run the tests before committing` / ``- Never commit without running `pnpm test` `` | runs `git commit` after editing code in that repository without a test run since (npm/pnpm/yarn/bun test, vitest, jest, pytest, go test, cargo test, …). Docs-only changes, `--amend`, and repositories with no test command are skipped |
 
 How it avoids false positives:

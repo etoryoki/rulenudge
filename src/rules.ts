@@ -13,7 +13,8 @@ export type RuleKind =
   | "worktree-only"
   | "test-before-commit"
   | "protected-path"
-  | "no-amend-pushed";
+  | "no-amend-pushed"
+  | "commit-format";
 
 export interface Rule {
   kind: RuleKind;
@@ -134,6 +135,21 @@ export function extractRulesFromText(
       const pass = /\bpass(?:es|ing)?\b|\bgreen\b|\bsucceed|通って|通して|通す|通過|成功|グリーン/i.test(line);
       rules.push({ kind: "test-before-commit", value: explicit, ...base, text: sentenceWith(base.text, COMMIT_WORD), pass });
       return;
+    }
+
+    // 0a) commit message format: Conventional Commits / English
+    if (ruleLine && /commit messages?|commit subject|コミットメッセージ/i.test(line)) {
+      const text = sentenceWith(base.text, /commit|コミット/i);
+      let matched = false;
+      if (/conventional\s*commits?/i.test(line) || /`(?:feat|fix|chore|docs)(?:\([^)`]*\))?:?`/.test(line)) {
+        rules.push({ kind: "commit-format", value: "conventional", ...base, text });
+        matched = true;
+      }
+      if (/\bin english\b|英語/i.test(line) && !isNegated) {
+        rules.push({ kind: "commit-format", value: "english", ...base, text });
+        matched = true;
+      }
+      if (matched) return;
     }
 
     // 0b) order rule: don't amend commits that were already pushed. Checked before forbidden

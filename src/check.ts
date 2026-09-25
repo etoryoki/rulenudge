@@ -12,7 +12,7 @@ import { inMainCheckout, isUnder, norm, repoInfo } from "./git.js";
 import { AmendAfterPushTracker, type OrderTracker, TestBeforeCommitTracker } from "./order.js";
 import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
-import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
+import { commandsWithCwd, commitSubjects, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
 
 export type Verdict = "violated" | "unclear" | "followed" | "not-applicable";
 
@@ -63,6 +63,7 @@ const RULE_FILES = ["CLAUDE.md", "AGENTS.md", path.join(".claude", "CLAUDE.md")]
 const OTHER_PMS = /^(npm|pnpm|yarn|bun)\s+(install|i|add|ci|remove|uninstall|rm)\b/;
 const READERS = /^(cat|less|more|head|tail|type|source|\.|bat|grep|rg|sed|awk|get-content|gc|select-string)\b/i;
 const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
+const CONVENTIONAL = /^(?:feat|fix|docs|style|refactor|perf|test|tests|build|ci|chore|revert|deps)(?:\([^)]+\))?!?:\s+\S/;
 const ENV_FILE = /(^|[\s/\\])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w.-]+)?(?=$|\s)/;
 const MUTATING_GIT = /^git\s+(switch|checkout|reset|commit|merge|rebase|stash|restore|clean|cherry-pick|revert|am|apply)\b/;
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
@@ -172,6 +173,18 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
     const all = commandsWithCwd(cmd, ev.cwd);
     const cmds = all.filter((c) => !root || isUnder(c.cwd, root));
     const show = (c: { text: string }) => unquote(c.text);
+    if (rule.kind === "commit-format") {
+      if (!cmds.some((c) => /^git\s+commit\b/.test(c.text))) return null;
+      for (const subject of commitSubjects(cmd)) {
+        if (/^(?:Merge|Revert|fixup!|squash!)/.test(subject)) continue;
+        const bad =
+          rule.value === "conventional"
+            ? !CONVENTIONAL.test(subject)
+            : /[぀-ヿ㐀-鿿ｦ-ﾟ]/.test(subject);
+        if (bad) return { what: `git commit: "${subject.slice(0, 70)}"`, keywords: ["message", "メッセージ"] };
+      }
+      return null;
+    }
     switch (rule.kind) {
       case "forbidden-cmd": {
         const hit = cmds.find((c) => startsWithCommand(c.text, rule.value!));

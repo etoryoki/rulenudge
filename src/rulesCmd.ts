@@ -29,6 +29,10 @@ export function describeRule(r: Rule): string {
       return `uses ${r.value} (not other package managers)`;
     case "worktree-only":
       return "works in a git worktree, not the main checkout";
+    case "commit-format":
+      return r.value === "conventional"
+        ? "writes commit messages as Conventional Commits (feat:, fix(scope): …)"
+        : "writes commit messages in English";
     case "no-amend-pushed":
       return "never amends a commit that was already pushed";
     case "protected-path":

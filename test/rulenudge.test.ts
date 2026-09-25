@@ -261,6 +261,39 @@ describe("test before commit", () => {
   });
 });
 
+describe("commit message format", () => {
+  it("reads Conventional Commits and English rules", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    expect(read("- Write commit messages as Conventional Commits.")).toEqual(["commit-format:conventional"]);
+    expect(read("- コミットメッセージは `feat:` / `fix:` で始める")).toEqual(["commit-format:conventional"]);
+    expect(read("- Commit messages in English.")).toEqual(["commit-format:english"]);
+    expect(read("- コミットメッセージは英語で書く")).toEqual(["commit-format:english"]);
+    expect(read("- Commit messages may be in Japanese.")).toEqual([]);
+  });
+
+  it("flags messages that break the format, from -m and heredocs", () => {
+    commitClaudeMd("- Write commit messages as Conventional Commits, in English.\n", Date.now() - 3 * DAY);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { bash: `git commit -m "feat(cli): add rules command"`, at: t },
+      { bash: `git commit -F - <<'EOF'\nfix: handle empty logs\n\nbody\nEOF`, at: t + 100 },
+      { bash: `git commit -m "update stuff"`, at: t + 200 },
+      { bash: `git commit -m "docs: 日本語の説明を追加"`, at: t + 300 },
+      { bash: "git commit --amend --no-edit", at: t + 400 },
+      { bash: `git commit -m "$(cat <<'EOF'\nchore: bump deps\n\nbody\nEOF\n)"`, at: t + 500 },
+      { bash: `git commit -m "$(cat <<'EOF'\nbump deps again\nEOF\n)"`, at: t + 600 },
+    ]);
+    const conv = verdictOf("commit-format", "conventional");
+    const en = verdictOf("commit-format", "english");
+    expect(conv?.violations.map((v) => v.what)).toEqual([
+      'git commit: "update stuff"',
+      'git commit: "bump deps again"',
+    ]);
+    expect(en?.violations.map((v) => v.what)).toEqual(['git commit: "docs: 日本語の説明を追加"']);
+  });
+});
+
 describe("amend after push", () => {
   const rule = "- Never `git commit --amend` a commit that was already pushed.\n";
 

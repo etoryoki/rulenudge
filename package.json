@@ -1,6 +1,6 @@
 {
   "name": "rulenudge",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Check whether your CLAUDE.md rules were actually followed, from Claude Code session logs — and remind Claude at the start of the next session.",
   "type": "module",
   "bin": {

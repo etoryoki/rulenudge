@@ -461,6 +461,19 @@ describe("checking sessions", () => {
     expect(u[0].sessions).toBe(1);
   });
 
+  it("still reports a sibling project when both share an ancestor CLAUDE.md (CTO review)", () => {
+    const work = path.join(home, "work");
+    const projA = path.join(work, "projA");
+    const projB = path.join(work, "projB");
+    mkdirSync(projA, { recursive: true });
+    mkdirSync(projB, { recursive: true });
+    writeFileSync(path.join(work, "CLAUDE.md"), "- Never run `rm -rf /`.\n");
+    writeFileSync(path.join(projB, "CLAUDE.md"), "- Never run `git push --force`.\n");
+    session("s1", projA, [{ tool: "Write", file: path.join(projB, "x.ts"), at: Date.now() - DAY }]);
+    const u = run().unloaded;
+    expect(u.map((x) => path.basename(x.dir))).toEqual(["projB"]);
+  });
+
   it("reports sessions that started where no rule file exists", () => {
     const elsewhere = path.join(home, "scratch");
     mkdirSync(elsewhere);

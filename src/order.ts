@@ -136,14 +136,18 @@ export class TestBeforeCommitTracker {
     }
     if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
 
-    for (const c of commandsWithCwd(ev.input.command, ev.cwd)) {
+    const cmds = commandsWithCwd(ev.input.command, ev.cwd);
+    for (const [i, c] of cmds.entries()) {
       const root = worktreeRoot(c.cwd);
       if (!root || !this.inScope(root)) continue;
       const k = `${ev.sessionId}|${norm(root)}`;
       if (isTestCommand(c.text, this.rule.value)) {
         // "tests must pass": a failed run leaves the change untested. (A pipe such as
         // `npm test | tail` hides the exit code; then the run counts as passed.)
-        if (this.rule.pass && ev.isError === true) {
+        // The exit status belongs to the whole call, so it only tells about the test when the
+        // test is the call's last command (`pnpm test; git log` would hide a failure).
+        const last = i === cmds.length - 1;
+        if (this.rule.pass && ev.isError === true && last) {
           this.failed.set(k, true);
         } else {
           this.dirty.set(k, false);

@@ -57,7 +57,7 @@ export interface UnloadedWork {
 
 // actions worth reporting when they happen outside the loaded rules (not plain reads)
 const CHANGING_CMD =
-  /^(?:git\s+(?:commit|push|merge|rebase|reset|switch|checkout|cherry-pick|revert|tag|stash|clean)\b|(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|publish)\b|gh\s+pr\s+(?:create|merge)\b|rm\s)/;
+  /^(?:git\s+(?:commit|push|merge|rebase|reset|switch|checkout|cherry-pick|revert|tag|stash|clean|restore|apply|am)\b|(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|publish)\b|gh\s+pr\s+(?:create|merge)\b|rm\s)/;
 
 const RULE_FILES = ["CLAUDE.md", "AGENTS.md", path.join(".claude", "CLAUDE.md")];
 const OTHER_PMS = /^(npm|pnpm|yarn|bun)\s+(install|i|add|ci|remove|uninstall|rm)\b/;
@@ -352,7 +352,7 @@ export function findUnloadedWork(events: ToolEvent[], ruleCount: (file: string) 
     if (!changes.length) continue;
     let loaded = loadedCache.get(ev.cwd);
     if (!loaded) {
-      loaded = projectRuleFilesFor(ev.cwd).map((f) => path.dirname(f));
+      loaded = projectRuleFilesFor(ev.cwd).map((f) => norm(path.dirname(f)));
       loadedCache.set(ev.cwd, loaded);
     }
     for (const { dir, what } of changes) {
@@ -360,9 +360,11 @@ export function findUnloadedWork(events: ToolEvent[], ruleCount: (file: string) 
       if (isUnder(dir, ev.cwd)) continue;
       // another worktree of the same repository carries the same CLAUDE.md
       if (sameRepo(dir, ev.cwd)) continue;
+      // loaded = the start folder's own chain of CLAUDE.md files, compared exactly: a shared
+      // ancestor (~/work/CLAUDE.md) being loaded says nothing about ~/work/projB/CLAUDE.md
       const files = projectRuleFilesFor(dir).filter((f) => {
-        const d = path.dirname(f);
-        return !loaded!.some((l) => isUnder(l, d) || isUnder(d, l)) && !isUnder(ev.cwd, d) && ruleCount(f) > 0;
+        const d = norm(path.dirname(f));
+        return !loaded!.includes(d) && !isUnder(ev.cwd, d) && ruleCount(f) > 0;
       });
       if (!files.length) continue;
       const key = path.dirname(files[0]);

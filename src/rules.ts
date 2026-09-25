@@ -81,6 +81,15 @@ function negationIndex(line: string): number {
   return m?.index ?? -1;
 }
 
+/** The sentence of `text` that contains `needle` (whole text if there is only one). */
+export function sentenceWith(text: string, needle: string | RegExp): string {
+  text = text.replace(/\*\*|__/g, "");
+  const sentences = text.split(/(?<=[.!?。！？])\s+|(?<=[。！？])/).filter((x) => x.trim());
+  if (sentences.length <= 1) return text;
+  const hit = sentences.find((x) => (typeof needle === "string" ? x.includes(needle) : needle.test(x)));
+  return (hit ?? text).trim();
+}
+
 export function extractRulesFromText(
   text: string,
   file: string,
@@ -110,7 +119,7 @@ export function extractRulesFromText(
     const ruleLine = BULLET.test(raw) || /^\*\*/.test(line);
     if (ruleLine && TEST_WORD.test(line) && COMMIT_WORD.test(line) && ORDER_WORD.test(line) && !EXEMPTION.test(line)) {
       const explicit = [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()).find((c) => /test|vitest|jest|pytest/i.test(c));
-      rules.push({ kind: "test-before-commit", value: explicit, ...base });
+      rules.push({ kind: "test-before-commit", value: explicit, ...base, text: sentenceWith(base.text, COMMIT_WORD) });
       return;
     }
 
@@ -124,16 +133,16 @@ export function extractRulesFromText(
           if (!CLI.test(cmd)) continue;
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
           if (cmd.split(/\s+/).length > 4) continue;
-          rules.push({ kind: "forbidden-cmd", value: cmd, ...base });
+          rules.push({ kind: "forbidden-cmd", value: cmd, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
         }
       }
       // 2) don't merge it yourself
       if (/\bmerge\b|マージ/i.test(line) && /yourself|your own|\bPRs?\b|pull request|自分で|勝手に/i.test(line)) {
-        rules.push({ kind: "forbidden-cmd", value: "gh pr merge", ...base });
+        rules.push({ kind: "forbidden-cmd", value: "gh pr merge", ...base, text: sentenceWith(base.text, /merge|マージ/i) });
       }
       // 3) secrets
       if (/(^|[\s`'"(])\.env\b/.test(line)) {
-        rules.push({ kind: "no-env", ...base });
+        rules.push({ kind: "no-env", ...base, text: sentenceWith(base.text, /\.env/) });
       }
     }
 
@@ -142,12 +151,12 @@ export function extractRulesFromText(
       line.match(/\b(?:always\s+)?use\s+(pnpm|yarn|bun|npm)\b(?!\s+to\b)/i) ??
       line.match(/\b(pnpm|yarn|bun|npm)\s*(?:を使う|を使用|を使って|のみ|only\b)/i);
     if (pm && !isNegated) {
-      rules.push({ kind: "package-manager", value: pm[1].toLowerCase(), ...base });
+      rules.push({ kind: "package-manager", value: pm[1].toLowerCase(), ...base, text: sentenceWith(base.text, pm[1]) });
     }
 
     // 5) worktree only
     if (/worktree/i.test(line) && /(never|not|don['’]t)\b[^.]{0,40}main (checkout|working (tree|copy))|メインのチェックアウト|always work in a (git )?worktree/i.test(line)) {
-      rules.push({ kind: "worktree-only", ...base });
+      rules.push({ kind: "worktree-only", ...base, text: sentenceWith(base.text, /worktree/i) });
     }
 
     // A line is rule-like when one of its sentences starts with an instruction word,

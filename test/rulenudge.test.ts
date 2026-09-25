@@ -228,6 +228,26 @@ describe("test before commit", () => {
   });
 });
 
+describe("rule text", () => {
+  it("shows the sentence that holds the rule, not the start of the line", () => {
+    const { rules } = extractRulesFromText(
+      [
+        "2. Commit there, push, and open a PR against `main`. Don't merge it yourself. The user reviews and merges.",
+        "- **Always work in a git worktree, never in the main checkout.** Other sessions may be working here.",
+        "- Never read `.env` files. Secrets live in the vault.",
+      ].join("\n"),
+      "CLAUDE.md",
+      null,
+      0,
+    );
+    expect(rules.map((r) => r.text)).toEqual([
+      "Don't merge it yourself.",
+      "Always work in a git worktree, never in the main checkout.",
+      "Never read `.env` files.",
+    ]);
+  });
+});
+
 describe("rules command", () => {
   it("lists rule-like lines but not descriptions", () => {
     const { uncheckable } = extractRulesFromText(

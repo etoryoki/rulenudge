@@ -11,7 +11,8 @@ export type RuleKind =
   | "no-env"
   | "package-manager"
   | "worktree-only"
-  | "test-before-commit";
+  | "test-before-commit"
+  | "protected-path";
 
 export interface Rule {
   kind: RuleKind;
@@ -37,9 +38,17 @@ export interface RuleSet {
   uncheckable: Uncheckable[];
 }
 
-export const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|読まない|実行しない/i;
+export const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|触れない|読まない|実行しない|書き換えない|変えない|いじらない|消さない|入れない/i;
 const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;
 const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const EDIT_VERB = /\b(?:edit|modify|change|touch|write|overwrite|update|hand-edit|alter)\b|編集|変更|書き換え|手で|触|修正|更新|いじ/i;
+
+/** `dist/`, `src/gen/**`, `*.lock`, `package-lock.json`, `apps/api/prisma/migrations/` */
+export function looksLikePath(s: string): boolean {
+  if (/\s/.test(s) || /^[-$<]/.test(s) || /[()=,;]/.test(s)) return false;
+  return /[\\/*]/.test(s) || /^[\w.-]+\.[A-Za-z0-9]{1,8}$/.test(s);
+}
+
 const TEST_WORD = /\btests?\b|テスト/i;
 const COMMIT_WORD = /\bcommit(?:s|ting)?\b|コミット/i;
 const ORDER_WORD = /\bbefore\b|\bpass(?:es|ing)?\b|\bgreen\b|\bwithout\b|前に|前は|してから|通って|通して|通過|なしで|せずに/i;
@@ -137,6 +146,14 @@ export function extractRulesFromText(
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
           if (cmd.split(/\s+/).length > 4) continue;
           rules.push({ kind: "forbidden-cmd", value: cmd, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
+        }
+        // 1b) protected paths: "Never edit `dist/`", "`*.lock` を手で書き換えない"
+        for (const m of line.matchAll(/`([^`]+)`/g)) {
+          const p = m[1].trim();
+          if (!looksLikePath(p) || CLI.test(p) || /^\.env\b/.test(p)) continue;
+          const sentence = sentenceWith(base.text, "`" + m[1] + "`");
+          if (!NEGATION.test(sentence) || !EDIT_VERB.test(sentence)) continue;
+          rules.push({ kind: "protected-path", value: p.replace(/^\.\//, ""), ...base, text: sentence });
         }
       }
       // 2) don't merge it yourself

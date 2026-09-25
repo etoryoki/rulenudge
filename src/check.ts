@@ -218,6 +218,12 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
         return { what: `${ev.tool} ${file}`, keywords: [base, ".env"] };
       }
     }
+    if (rule.kind === "protected-path" && WRITE_TOOLS.has(ev.tool)) {
+      const rel = root ? path.relative(root, file).replace(/\\/g, "/") : path.basename(file);
+      if (matchesPath(rel, rule.value!)) {
+        return { what: `${ev.tool} ${file}`, keywords: [path.basename(file), rule.value!.replace(/[*/]+$/g, "")] };
+      }
+    }
     if (rule.kind === "worktree-only" && WRITE_TOOLS.has(ev.tool)) {
       const repo = repoInfo(path.dirname(file));
       if (repo && inMainCheckout(file, repo)) {
@@ -320,6 +326,41 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
       return r.rules.length + r.uncheckable.length;
     }),
   };
+}
+
+function globToRegExp(glob: string): RegExp {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i];
+    if (ch === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else re += "[^/]*";
+    } else if (ch === "?") re += "[^/]";
+    else re += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`, "i");
+}
+
+/**
+ * Does a repository-relative path fall under a rule's path?
+ * `dist/` or `dist` → the folder and everything in it; `*.lock` / `package-lock.json`
+ * (no slash) → a file of that name anywhere; `src/gen/**` → glob from the root.
+ */
+export function matchesPath(rel: string, pattern: string): boolean {
+  const p = pattern.replace(/\\/g, "/").replace(/^\.?\//, "");
+  const r = rel.replace(/\\/g, "/");
+  if (!p.includes("/") ) {
+    const base = r.split("/").pop() ?? r;
+    if (/[*?]/.test(p)) return globToRegExp(p).test(base);
+    // a bare name: a file with that name, or a folder with that name anywhere in the path
+    return base.toLowerCase() === p.toLowerCase() || r.toLowerCase().split("/").slice(0, -1).includes(p.toLowerCase());
+  }
+  if (p.endsWith("/")) return r.toLowerCase().startsWith(p.toLowerCase());
+  if (/[*?]/.test(p)) return globToRegExp(p).test(r);
+  return r.toLowerCase() === p.toLowerCase() || r.toLowerCase().startsWith(p.toLowerCase() + "/");
 }
 
 function sameRepo(a: string, b: string): boolean {

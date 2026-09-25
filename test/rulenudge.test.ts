@@ -261,6 +261,41 @@ describe("test before commit", () => {
   });
 });
 
+describe("protected paths", () => {
+  it("reads path rules, not commands or usage notes", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    expect(read("- Never edit `dist/` by hand.")).toEqual(["protected-path:dist/"]);
+    expect(read("- `*.lock` を手で書き換えない")).toEqual(["protected-path:*.lock"]);
+    expect(read("- Do not modify files in `apps/api/prisma/migrations/`.")).toEqual([
+      "protected-path:apps/api/prisma/migrations/",
+    ]);
+    expect(read("- Use `src/lib/http.ts` for all requests.")).toEqual([]);
+    expect(read("- Never run `git push --force`.")).toEqual(["forbidden-cmd:git push --force"]);
+  });
+
+  it("matches folders, globs and bare file names", async () => {
+    const { matchesPath } = await import("../src/check.js");
+    expect(matchesPath("dist/index.js", "dist/")).toBe(true);
+    expect(matchesPath("src/dist.ts", "dist/")).toBe(false);
+    expect(matchesPath("a/b/yarn.lock", "*.lock")).toBe(true);
+    expect(matchesPath("pnpm-lock.yaml", "*.lock")).toBe(false);
+    expect(matchesPath("src/gen/a/b.ts", "src/gen/**")).toBe(true);
+    expect(matchesPath("package-lock.json", "package-lock.json")).toBe(true);
+  });
+
+  it("flags an edit inside a protected folder", () => {
+    commitClaudeMd("- Never edit `dist/` by hand.\n", Date.now() - 3 * DAY);
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src", "a.ts"), at: Date.now() - DAY },
+      { tool: "Write", file: path.join(repo, "dist", "a.js"), at: Date.now() - DAY + 100 },
+    ]);
+    const r = verdictOf("protected-path");
+    expect(r?.verdict).toBe("violated");
+    expect(r?.violations).toHaveLength(1);
+  });
+});
+
 describe("rule text", () => {
   it("shows the sentence that holds the rule, not the start of the line", () => {
     const { rules } = extractRulesFromText(

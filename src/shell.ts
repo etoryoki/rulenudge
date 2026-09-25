@@ -33,8 +33,11 @@ function stripHeredocs(cmd: string): string {
  * Split into simple commands. Quoted content is replaced by a placeholder
  * token so it can never match a command prefix, but word boundaries are kept.
  */
-export function splitCommands(input: string): string[] {
-  const src = stripHeredocs(input);
+export function splitCommands(input: string, powershell = false): string[] {
+  // PowerShell: the escape character is ` and a backslash is just a path separator
+  // ("C:\project\" ends the string); sh: \ escapes, and heredoc bodies are dropped
+  const esc = powershell ? "`" : "\\";
+  const src = powershell ? input : stripHeredocs(input);
   const commands: string[] = [];
   let cur = "";
   let i = 0;
@@ -46,16 +49,16 @@ export function splitCommands(input: string): string[] {
   while (i < src.length) {
     const ch = src[i];
     if (ch === "'" || ch === '"') {
-      // inside "…", \" and \\ are escapes; inside '…' nothing is
+      // inside "…" the escape character escapes the quote; inside '…' nothing does
       let end = i + 1;
-      while (end < src.length && src[end] !== ch) end += ch === '"' && src[end] === "\\" ? 2 : 1;
+      while (end < src.length && src[end] !== ch) end += ch === '"' && src[end] === esc ? 2 : 1;
       if (end >= src.length) end = -1;
       cur += QOPEN + src.slice(i + 1, end === -1 ? src.length : end) + QCLOSE;
       i = end === -1 ? src.length : end + 1;
       continue;
     }
-    if (ch === "\\" && i + 1 < src.length) {
-      cur += src[i + 1] === "\n" ? " " : src[i + 1];
+    if (ch === esc && i + 1 < src.length) {
+      cur += src[i + 1] === "\n" || src[i + 1] === "\r" ? " " : src[i + 1];
       i += 2;
       continue;
     }
@@ -97,14 +100,14 @@ export interface SimpleCommand {
   cwd: string;
 }
 
-export function commandsWithCwd(input: string, baseCwd: string): SimpleCommand[] {
+export function commandsWithCwd(input: string, baseCwd: string, powershell = false): SimpleCommand[] {
   let cwd = baseCwd;
   const out: SimpleCommand[] = [];
   // simple variable assignments in the same command line: `$wt="C:\x"` (PowerShell), `WT="/x"` (sh)
   const vars = new Map<string, string>();
   const expand = (s: string) =>
     s.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (m, name: string) => vars.get(name) ?? m);
-  for (const c of splitCommands(input)) {
+  for (const c of splitCommands(input, powershell)) {
     const plain = unquote(c);
     const assign = plain.match(/^\$?([A-Za-z_]\w*)\s*=\s*(\S.*)$/);
     if (assign) {

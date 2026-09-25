@@ -358,6 +358,31 @@ describe("run a check before pushing", () => {
     expect(r?.violations.map((v) => v.sessionId)).toEqual(["s1"]);
   });
 
+  it("resolves scripts per package, from the declared workspaces", async () => {
+    const { runsCheck } = await import("../src/scripts.js");
+    const pkg = (dir: string, json: object) => {
+      mkdirSync(path.join(repo, dir), { recursive: true });
+      writeFileSync(path.join(repo, dir, "package.json"), JSON.stringify(json));
+    };
+    pkg(".", { name: "root", workspaces: ["domains/*"], scripts: { build: "turbo run build" } });
+    writeFileSync(path.join(repo, "pnpm-workspace.yaml"), "packages:\n  - 'domains/*'\n");
+    pkg("domains/web", { name: "web", scripts: { "type-check": "tsc --noEmit", build: "webpack" } });
+    pkg("domains/api", { name: "@x/api", scripts: { build: "tsc --noEmit && esbuild src/index.ts" } });
+    const runs = (text: string, cwd = repo) => runsCheck(text, "tsc --noEmit", repo, cwd);
+    // a non-standard workspace folder
+    expect(runs("pnpm --filter web type-check")).toBe(true);
+    expect(runs("yarn workspace web type-check")).toBe(true);
+    expect(runs("npm run type-check --workspace=web")).toBe(true);
+    // the same script name does different things in different packages
+    expect(runs("pnpm --filter web build")).toBe(false);
+    expect(runs("pnpm --filter @x/api build")).toBe(true);
+    expect(runs("pnpm build", path.join(repo, "domains", "web"))).toBe(false);
+    expect(runs("pnpm build", path.join(repo, "domains", "api", "src"))).toBe(true);
+    // turbo runs build in every package: api's build type-checks
+    expect(runs("pnpm build")).toBe(true);
+    expect(runs("pnpm lint")).toBe(false);
+  });
+
   it("counts a pre-push hook that runs the check, unless hooks are skipped", () => {
     setupTypeCheck("#!/usr/bin/env sh\n# type check before push\npnpm run type-check\n");
     const t = Date.now() - DAY;
@@ -633,6 +658,14 @@ describe("shell lexing", () => {
     expect(splitCommands("cat <<EOF > x\ngit push --force\nEOF\nls")).toEqual(["cat  > x", "ls"]);
     expect(splitCommands("cd a && git status; npm test | tail -1")).toEqual(["cd a", "git status", "npm test", "tail -1"]);
     expect(splitCommands("timeout 600 npx vitest run --pool=threads")).toEqual(["npx vitest run --pool=threads"]);
+  });
+
+  it("reads PowerShell quoting: a backslash before the closing quote is a path", () => {
+    expect(splitCommands('git commit -m "update C:\\project\\" && git push', true).map((c) => c.replace(/[\u0001\u0002]/g, ""))).toEqual([
+      "git commit -m update C:\\project\\",
+      "git push",
+    ]);
+    expect(splitCommands('echo "a `"b; git push`"" ; git status', true)).toHaveLength(2);
   });
 
   it("keeps escaped quotes inside a double-quoted string", () => {

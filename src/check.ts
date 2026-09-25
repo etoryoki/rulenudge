@@ -170,7 +170,7 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
   const root = ruleRoot(rule);
 
   if (cmd !== null) {
-    const all = commandsWithCwd(cmd, ev.cwd);
+    const all = commandsWithCwd(cmd, ev.cwd, ev.tool === "PowerShell");
     const cmds = all.filter((c) => !root || isUnder(c.cwd, root));
     const show = (c: { text: string }) => unquote(c.text);
     if (rule.kind === "commit-format") {
@@ -414,7 +414,7 @@ function changedDirs(ev: ToolEvent): { dir: string; what: string }[] {
   }
   const cmd = commandOf(ev);
   if (cmd !== null) {
-    for (const c of commandsWithCwd(cmd, ev.cwd)) {
+    for (const c of commandsWithCwd(cmd, ev.cwd, ev.tool === "PowerShell")) {
       if (CHANGING_CMD.test(c.text)) out.push({ dir: c.cwd, what: unquote(c.text) });
     }
   }

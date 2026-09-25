@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileRoot, isUnder, norm, ruleCovers, worktreeRoot } from "./git.js";
 import type { Rule } from "./rules.js";
 import type { ToolEvent } from "./sessions.js";
+import { runsCheck } from "./scripts.js";
 import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
 
 const TEST_CMD =
@@ -128,7 +129,7 @@ export class AmendAfterPushTracker implements OrderTracker {
 
   step(ev: ToolEvent): OrderHit | null {
     if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
-    for (const c of commandsWithCwd(ev.input.command, ev.cwd)) {
+    for (const c of commandsWithCwd(ev.input.command, ev.cwd, ev.tool === "PowerShell")) {
       const root = worktreeRoot(c.cwd);
       if (!root || (this.scope && !isUnder(root, this.scope) && !isUnder(this.scope, root))) continue;
       const k = norm(root);
@@ -163,81 +164,6 @@ export class AmendAfterPushTracker implements OrderTracker {
   }
 }
 
-const scriptsCache = new Map<string, Map<string, string[]>>();
-
-/** npm scripts of the checkout and its workspace packages: name → bodies. */
-function scriptsOf(root: string): Map<string, string[]> {
-  const k = norm(root);
-  const hit = scriptsCache.get(k);
-  if (hit) return hit;
-  const scripts = new Map<string, string[]>();
-  const add = (dir: string) => {
-    try {
-      const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as { scripts?: Record<string, string> };
-      for (const [name, body] of Object.entries(pkg.scripts ?? {})) scripts.set(name, [...(scripts.get(name) ?? []), body]);
-    } catch {
-      /* no package.json */
-    }
-  };
-  add(root);
-  for (const group of ["apps", "packages", "services", "libs", "modules", "infra"]) {
-    let names: string[] = [];
-    try {
-      names = readdirSync(path.join(root, group));
-    } catch {
-      continue;
-    }
-    for (const n of names) add(path.join(root, group, n));
-  }
-  scriptsCache.set(k, scripts);
-  return scripts;
-}
-
-const RUNNER = /^(?:npx|pnpx|bunx|(?:pnpm|npm|yarn)\s+(?:(?:-r|--recursive|--filter(?:=\S+|\s+\S+)|-F\s+\S+|-w|--workspace(?:=\S+|\s+\S+)?)\s+)*(?:exec|dlx)|yarn|node\s+\S*node_modules\S*[\\/](?=\S))\s*/i;
-
-/** Does `text` run `cmd` itself: `tsc --noEmit -p x`, `npx tsc --noEmit`, `pnpm exec tsc --noEmit`? */
-function runsDirectly(text: string, cmd: string): boolean {
-  const words = text.replace(RUNNER, "").split(/\s+/);
-  const want = cmd.split(/\s+/);
-  const prog = (w: string) => w.replace(/^.*[\\/]/, "").replace(/\.(?:c?js|mjs|cmd|exe)$/i, "");
-  return prog(words[0] ?? "") === prog(want[0]) && want.slice(1).every((w) => words.includes(w));
-}
-
-/** Script names that run `cmd`, directly or through other scripts (`type-check` → `tsc --noEmit`). */
-function scriptsRunning(root: string, cmd: string): Set<string> {
-  const scripts = scriptsOf(root);
-  const names = new Set<string>();
-  const runs = (body: string) =>
-    body.split(/&&|\|\||;/).some((part) => {
-      const p = part.trim();
-      if (runsDirectly(p, cmd)) return true;
-      const m = p.match(SCRIPT_CALL);
-      return !!m && names.has(m[1]);
-    });
-  // a fixed point: scripts calling scripts (`pnpm --filter "*" type-check`, `turbo run type-check`)
-  for (let changed = true; changed; ) {
-    changed = false;
-    for (const [name, bodies] of scripts) {
-      if (!names.has(name) && bodies.some(runs)) {
-        names.add(name);
-        changed = true;
-      }
-    }
-  }
-  return names;
-}
-
-const SCRIPT_CALL =
-  /^(?:(?:npm|pnpm|yarn|bun)\s+(?:(?:-r|--recursive|--if-present|--parallel|-w|--workspaces?|--workspace(?:=\S+|\s+\S+)|--filter(?:=\S+|\s+\S+)|-F\s+\S+)\s+)*(?:run\s+)?|turbo\s+(?:run\s+)?|nx\s+(?:run-many\s+(?:-t|--target)\s+|run\s+\S+:)?)["']?([\w:.-]+)/i;
-
-/** Does the command run the check, directly or through a package script? */
-function runsCheck(text: string, cmd: string, root: string): boolean {
-  const t = unquote(text);
-  if (runsDirectly(t, cmd) || startsWithCommand(t, cmd)) return true;
-  const m = t.match(SCRIPT_CALL);
-  return !!m && scriptsRunning(root, cmd).has(m[1]);
-}
-
 /** A git hook in the checkout (husky or .git/hooks) that runs the check on this action. */
 function hookRuns(root: string, hook: string, cmd: string): boolean {
   for (const file of [path.join(root, ".husky", hook), path.join(root, ".git", "hooks", hook)]) {
@@ -248,7 +174,7 @@ function hookRuns(root: string, hook: string, cmd: string): boolean {
       continue;
     }
     const lines = body.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
-    if (lines.some((l) => runsCheck(l.trim(), cmd, root))) return true;
+    if (lines.some((l) => runsCheck(l.trim(), cmd, root, root))) return true;
   }
   return false;
 }
@@ -282,11 +208,11 @@ export class RunBeforeTracker implements OrderTracker {
       return null;
     }
     if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
-    for (const c of commandsWithCwd(ev.input.command, ev.cwd)) {
+    for (const c of commandsWithCwd(ev.input.command, ev.cwd, ev.tool === "PowerShell")) {
       const root = worktreeRoot(c.cwd);
       if (!root || !this.inScope(root)) continue;
       const k = `${ev.sessionId}|${norm(root)}`;
-      if (runsCheck(c.text, cmd, root)) {
+      if (runsCheck(c.text, cmd, root, c.cwd)) {
         this.dirty.set(k, false);
         continue;
       }
@@ -348,7 +274,7 @@ export class TestBeforeCommitTracker implements OrderTracker {
     }
     if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
 
-    const cmds = commandsWithCwd(ev.input.command, ev.cwd);
+    const cmds = commandsWithCwd(ev.input.command, ev.cwd, ev.tool === "PowerShell");
     for (const [i, c] of cmds.entries()) {
       const root = worktreeRoot(c.cwd);
       if (!root || !this.inScope(root)) continue;

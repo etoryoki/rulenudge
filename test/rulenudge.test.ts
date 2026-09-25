@@ -127,6 +127,92 @@ describe("rule extraction", () => {
   });
 });
 
+describe("test before commit", () => {
+  const rule = "- Never commit without running `pnpm test`.\n";
+  const withTests = () =>
+    writeFileSync(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+
+  it("reads the rule (and does not treat the test command as forbidden)", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    expect(read(rule.trim())).toEqual(["test-before-commit:pnpm test"]);
+    expect(read("- コミット前に必ずテストを通すこと")).toEqual(["test-before-commit:"]);
+    expect(read("- Run the tests before committing.")).toEqual(["test-before-commit:"]);
+    expect(read("- Tests live in packages/*/test.")).toEqual([]);
+  });
+
+  it("flags a commit after code edits with no test run, and accepts one after tests", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    withTests();
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src.ts"), at: t },
+      { bash: "git add -A && git commit -m x", at: t + 1000 },
+    ]);
+    session("s2", repo, [
+      { tool: "Edit", file: path.join(repo, "src.ts"), at: t },
+      { bash: "pnpm --filter @x/app test", at: t + 500 },
+      { bash: "git commit -am y", at: t + 1000 },
+    ]);
+    const r = verdictOf("test-before-commit");
+    expect(r?.verdict).toBe("violated");
+    expect(r?.violations.map((v) => v.sessionId)).toEqual(["s1"]);
+  });
+
+  it("ignores docs-only changes, amends, and edits in another repository", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    withTests();
+    const other = path.join(home, "other");
+    mkdirSync(other);
+    git(["init", "-q", "-b", "main"], other);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "README.md"), at: t },
+      { bash: "git commit -m docs", at: t + 100 },
+      { tool: "Edit", file: path.join(other, "lib.ts"), at: t + 200 },
+      { bash: "git commit -m unrelated", at: t + 300 },
+      { tool: "Edit", file: path.join(repo, "src.ts"), at: t + 400 },
+      { bash: "git commit --amend --no-edit", at: t + 500 },
+    ]);
+    expect(verdictOf("test-before-commit")?.verdict).toBe("followed");
+  });
+
+  it("does not apply to a repository without any test command", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src.ts"), at: t },
+      { bash: "git commit -m x", at: t + 1000 },
+    ]);
+    expect(verdictOf("test-before-commit")?.violations).toHaveLength(0);
+  });
+
+  it("recognises tests run through a file path after a PowerShell variable cd", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    withTests();
+    const t = Date.now() - DAY;
+    const ps = [`$wt="${repo}"`, `Set-Location "$wt"; node "$wt/node_modules/vitest/vitest.mjs" run`].join("\n");
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src.ts"), at: t },
+      { bash: ps, at: t + 500 },
+      { bash: "git commit -m y", at: t + 1000 },
+    ]);
+    expect(verdictOf("test-before-commit")?.verdict).toBe("followed");
+  });
+
+  it("is unclear when the user asked to commit without tests", () => {
+    commitClaudeMd(rule, Date.now() - 3 * DAY);
+    withTests();
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "src.ts"), at: t },
+      { user: "テストはいいのでコミットしてください", at: t + 500 },
+      { bash: "git commit -m x", at: t + 1000 },
+    ]);
+    expect(verdictOf("test-before-commit")?.verdict).toBe("unclear");
+  });
+});
+
 describe("rules command", () => {
   it("lists rule-like lines but not descriptions", () => {
     const { uncheckable } = extractRulesFromText(
@@ -147,7 +233,9 @@ describe("rules command", () => {
   it("gives a rewrite hint for commands written without backticks", async () => {
     const { hintFor } = await import("../src/rulesCmd.js");
     expect(hintFor({ text: "Never git push --force to main", file: "x", line: 1 })).toContain("`git push --force to main`");
-    expect(hintFor({ text: "Always run the tests before you commit", file: "x", line: 1 })).toContain("planned");
+    expect(hintFor({ text: "Always keep the tests green for every commit you make", file: "x", line: 1 })).toContain(
+      "Run the tests before committing",
+    );
     expect(hintFor({ text: "Keep functions small", file: "x", line: 1 })).toContain("judgement");
   });
 
@@ -169,6 +257,15 @@ describe("shell lexing", () => {
     expect(quoted[0].startsWith("grep ")).toBe(true);
     expect(splitCommands("cat <<EOF > x\ngit push --force\nEOF\nls")).toEqual(["cat  > x", "ls"]);
     expect(splitCommands("cd a && git status; npm test | tail -1")).toEqual(["cd a", "git status", "npm test", "tail -1"]);
+    expect(splitCommands("timeout 600 npx vitest run --pool=threads")).toEqual(["npx vitest run --pool=threads"]);
+  });
+
+  it("follows git global options and variable-based cd", async () => {
+    const { commandsWithCwd } = await import("../src/shell.js");
+    const [c] = commandsWithCwd("git -c core.hooksPath=/dev/null commit --no-verify -m x", "/repo");
+    expect(c.text).toBe("git commit --no-verify -m x");
+    const cmds = commandsWithCwd('$wt="/work/wt"\nSet-Location "$wt/apps"; npm test', "/repo");
+    expect(cmds.map((x) => [x.text, x.cwd.replace(/\\/g, "/").replace(/^[A-Z]:/, "")])).toEqual([["npm test", "/work/wt/apps"]]);
   });
 });
 

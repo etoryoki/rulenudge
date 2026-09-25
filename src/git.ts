@@ -75,6 +75,15 @@ export function repoInfo(dir: string): RepoInfo | null {
   return info;
 }
 
+/** Root of the checkout (main or linked worktree) that contains `p`, or null outside git. */
+export function worktreeRoot(p: string): string | null {
+  const info = repoInfo(p);
+  if (!info) return null;
+  const roots = [info.main, ...info.linked].filter((r) => isUnder(p, r));
+  if (!roots.length) return null;
+  return roots.sort((a, b) => b.length - a.length)[0];
+}
+
 /** Is `p` inside the main checkout (and not inside a linked worktree nested in it)? */
 export function inMainCheckout(p: string, repo: RepoInfo): boolean {
   if (!isUnder(p, repo.main)) return false;

@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { inMainCheckout, isUnder, norm, repoInfo } from "./git.js";
+import { TestBeforeCommitTracker } from "./order.js";
 import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
 import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
@@ -251,6 +252,7 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
   // a rule counts as "exercised" by a session that acted after the rule was written
   const exercised = new Map<string, Set<string>>();
 
+  const trackers = new Map<string, TestBeforeCommitTracker>();
   for (const ev of events) {
     for (const f of filesFor(ev.cwd)) {
       for (const r of loadFile(f).rules) {
@@ -258,6 +260,16 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
         const set = exercised.get(key(r)) ?? new Set<string>();
         set.add(ev.sessionId);
         exercised.set(key(r), set);
+        if (r.kind === "test-before-commit") {
+          let tracker = trackers.get(key(r));
+          if (!tracker) {
+            tracker = new TestBeforeCommitTracker(r, ruleRoot(r));
+            trackers.set(key(r), tracker);
+          }
+          const hit = tracker.step(ev);
+          if (hit) (hit.unclear ? resultFor(r).unclear : resultFor(r).violations).push(hit);
+          continue;
+        }
         const d = detect(r, ev);
         if (!d) continue;
         const res = resultFor(r);

@@ -83,6 +83,7 @@ rulenudge only judges rules it can check without guessing. Everything else is co
 | `- Never read \`.env\` files` | reads `.env`, `.env.local`, … (not `.env.example`) |
 | `- Use pnpm` | installs with npm / yarn / bun |
 | `- Always work in a git worktree, never in the main checkout` | edits files or runs `git switch/commit/reset/…` in the main checkout |
+| `- Run the tests before committing` / ``- Never commit without running `pnpm test` `` | runs `git commit` after editing code in that repository without a test run since (npm/pnpm/yarn/bun test, vitest, jest, pytest, go test, cargo test, …). Docs-only changes, `--amend`, and repositories with no test command are skipped |
 
 How it avoids false positives:
 

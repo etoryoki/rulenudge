@@ -70,7 +70,7 @@ export function splitCommands(input: string): string[] {
   return commands.map((c) =>
     c
       .replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "")
-      .replace(/^(?:sudo|time|command|exec|nohup)\s+/, "")
+      .replace(/^(?:(?:sudo|time|command|exec|nohup|nice)\s+|timeout\s+(?:-\S+\s+)*\S+\s+)+/, "")
       .trim(),
   ).filter(Boolean);
 }
@@ -97,20 +97,33 @@ export interface SimpleCommand {
 export function commandsWithCwd(input: string, baseCwd: string): SimpleCommand[] {
   let cwd = baseCwd;
   const out: SimpleCommand[] = [];
+  // simple variable assignments in the same command line: `$wt="C:\x"` (PowerShell), `WT="/x"` (sh)
+  const vars = new Map<string, string>();
+  const expand = (s: string) =>
+    s.replace(/\$\{?([A-Za-z_]\w*)\}?/g, (m, name: string) => vars.get(name) ?? m);
   for (const c of splitCommands(input)) {
     const plain = unquote(c);
-    const cd = plain.match(/^(?:cd|pushd|set-location|sl|chdir)\s+(?:-path\s+|-literalpath\s+)?(.+)$/i);
+    const assign = plain.match(/^\$?([A-Za-z_]\w*)\s*=\s*(\S.*)$/);
+    if (assign) {
+      vars.set(assign[1], expand(assign[2].trim()));
+      continue;
+    }
+    const cd = expand(plain).match(/^(?:cd|pushd|set-location|sl|chdir)\s+(?:-path\s+|-literalpath\s+)?(.+)$/i);
     if (cd) {
       const target = normalizeMsysPath(cd[1].trim());
       if (target !== "-" && !target.startsWith("~") && !target.includes("$")) cwd = path.resolve(cwd, target);
       continue;
     }
-    const gitC = c.match(/^git\s+-C\s+(\S+)\s+(.*)$/);
-    if (gitC) {
-      out.push({ text: `git ${gitC[2]}`, cwd: path.resolve(cwd, normalizeMsysPath(unquote(gitC[1]))) });
-      continue;
+    // git global options before the subcommand: `git -c k=v commit`, `git --no-pager log`, `git -C dir x`
+    let text = c;
+    let runIn = cwd;
+    const g = text.match(/^git\s+((?:(?:-c\s+\S+|-C\s+\S+|--no-pager|--git-dir=\S+|--work-tree=\S+)\s+)+)(.*)$/);
+    if (g) {
+      const dirOpt = g[1].match(/-C\s+(\S+)/);
+      if (dirOpt) runIn = path.resolve(cwd, normalizeMsysPath(unquote(dirOpt[1])));
+      text = `git ${g[2]}`;
     }
-    out.push({ text: c, cwd });
+    out.push({ text, cwd: runIn });
   }
   return out;
 }

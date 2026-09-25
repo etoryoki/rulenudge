@@ -29,6 +29,8 @@ export function describeRule(r: Rule): string {
       return `uses ${r.value} (not other package managers)`;
     case "worktree-only":
       return "works in a git worktree, not the main checkout";
+    case "test-before-commit":
+      return `runs tests${r.value ? ` (\`${r.value}\`)` : ""} before committing code changes`;
   }
 }
 
@@ -38,8 +40,8 @@ const COMMAND_WORD =
 /** Why a rule is not checkable, and how it could be (if at all). */
 export function hintFor(u: Uncheckable): string {
   const t = u.text;
-  if (/test|テスト/i.test(t) && /commit|コミット|push|プッシュ|finish|完了/i.test(t)) {
-    return "order rule (\"test before commit\") — support is planned for the next version";
+  if (/test|テスト/i.test(t) && /commit|コミット/i.test(t)) {
+    return "say when the tests must run to make it checkable, e.g.  - Run the tests before committing";
   }
   if (!/`/.test(t)) {
     const m = t.match(COMMAND_WORD);

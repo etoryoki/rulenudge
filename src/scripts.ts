@@ -14,6 +14,46 @@ export interface Pkg {
   scripts: Record<string, string>;
   /** names of everything it depends on (dependencies, devDependencies, peerDependencies) */
   deps: string[];
+  /** folders its tsconfig files point at (`references`, `paths`): checked by its tsc too */
+  tsRefs: string[];
+}
+
+/** tsconfig allows comments and trailing commas. */
+function readJsonc(file: string): unknown {
+  const text = readFileSync(file, "utf8")
+    .replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith('"') ? m : ""))
+    .replace(/,(\s*[}\]])/g, "$1");
+  return JSON.parse(text);
+}
+
+/** Folders that the package's tsconfig*.json files reference or map paths to. */
+function tsconfigRefs(dir: string): string[] {
+  const out: string[] = [];
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).filter((f) => /^tsconfig.*\.json$/i.test(f));
+  } catch {
+    return out;
+  }
+  for (const f of files) {
+    try {
+      const cfg = readJsonc(path.join(dir, f)) as {
+        references?: { path?: string }[];
+        compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
+      };
+      for (const r of cfg.references ?? []) if (r.path) out.push(path.resolve(dir, r.path));
+      const base = path.resolve(dir, cfg.compilerOptions?.baseUrl ?? ".");
+      for (const targets of Object.values(cfg.compilerOptions?.paths ?? {})) {
+        for (const t of targets) {
+          const clean = t.replace(/\*.*$/, "");
+          if (clean) out.push(path.resolve(base, clean));
+        }
+      }
+    } catch {
+      /* unreadable tsconfig */
+    }
+  }
+  return out;
 }
 
 const cache = new Map<string, Pkg[]>();
@@ -28,7 +68,7 @@ function readPkg(dir: string): Pkg | null {
       peerDependencies?: Record<string, string>;
     };
     const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies });
-    return { dir, name: pkg.name ?? path.basename(dir), scripts: pkg.scripts ?? {}, deps };
+    return { dir, name: pkg.name ?? path.basename(dir), scripts: pkg.scripts ?? {}, deps, tsRefs: tsconfigRefs(dir) };
   } catch {
     return null;
   }
@@ -227,7 +267,8 @@ export function packageOf(pkgs: Pkg[], p: string): Pkg | null {
 
 /**
  * Packages a check run in `dir` covers: the package there, every package below it, and the
- * workspace packages they depend on (tsc in apps/api also checks the @x/types it imports).
+ * workspace packages they depend on — in package.json or through tsconfig `references` /
+ * `paths` (tsc in apps/api also checks the @x/types it imports).
  */
 function coveredBy(pkgs: Pkg[], dir: string): string[] {
   const here = packageOf(pkgs, dir);
@@ -242,6 +283,13 @@ function coveredBy(pkgs: Pkg[], dir: string): string[] {
     for (const d of p.deps) {
       const dep = byName.get(d);
       if (dep) todo.push(dep);
+    }
+    // connected only through tsconfig (`references`, `paths`), without a package.json dependency
+    // (`"@x/*": ["../../packages/*/src"]` points at a folder of packages: all of them)
+    for (const ref of p.tsRefs) {
+      const under = pkgs.filter((x) => isUnder(x.dir, ref));
+      const deps = under.length ? under : [packageOf(pkgs, ref)].filter((x): x is Pkg => !!x);
+      for (const dep of deps) if (norm(dep.dir) !== norm(p.dir)) todo.push(dep);
     }
   }
   return [...out];

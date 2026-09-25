@@ -22,7 +22,7 @@ function short(s: string, n: number): string {
 export function describeRule(r: Rule): string {
   switch (r.kind) {
     case "forbidden-cmd":
-      return `never runs \`${r.value}\``;
+      return `never runs \`${r.value}\`${r.where === "main-checkout" ? " in the main checkout" : ""}`;
     case "no-env":
       return "never reads .env files";
     case "package-manager":

@@ -30,6 +30,8 @@ export interface Rule {
   pass?: boolean;
   /** run-before: the command must run before this git action. */
   trigger?: "push" | "commit";
+  /** forbidden-cmd: only forbidden in the repository's main checkout ("…in the main checkout"). */
+  where?: "main-checkout";
 }
 
 export interface Uncheckable {
@@ -51,6 +53,12 @@ export const NEGATION = new RegExp(`${NEG_EN.source}|${NEG_JA.source}`, "i");
 // ("even if" stresses the rule; 「〜ではいけない」 is a prohibition, not 「〜では」)
 const CONDITIONAL =
   /\b(?:only when|only if|unless|in case)\b|(?<!\beven\s)\b(?:if|when|while)\b|場合|とき|時は|際|次第|限り|ないと|なければ|たら|なら[、,\s]|ならば|では(?!(?:いけ|なら|なり|だめ|ダメ|駄目|ない))/i;
+// "in the main checkout": checkable — the command's folder tells whether it ran there
+const MAIN_CHECKOUT = /\b(?:in|on|from)\s+the\s+main\s+(?:checkout|working\s+(?:tree|copy)|repo(?:sitory)?\s+folder)\b|メインのチェックアウト|メインの作業ツリー/i;
+// "on main", "to production", "in staging", "本番では", "main ブランチに": the branch or environment
+// is not in the session log, so such a rule cannot be judged without guessing
+const SCOPE =
+  /\b(?:on|in|to|into|against|from)\s+(?:the\s+)?(?:main|master|develop|trunk|production|prod|staging|release)\b(?!\s+(?:checkout|working))|\b(?:on|in|to)\s+(?:the\s+)?[\w./-]+\s+(?:branch|environment|env)\b|\bin\s+CI\b|(?:main|master|develop|本番|ステージング|staging|production|prod)\s*(?:ブランチ|環境)?\s*(?:で|に|へ|上で)/i;
 // "consider avoiding", "〜を避けることを検討", "なるべく"
 const HEDGE = /\b(?:consider|ideally|try to|if possible)\b|検討|なるべく|できれば|できるだけ|推奨/i;
 // "〜しない設定になっている", "〜でマスクしている": describes the system, not a rule for Claude
@@ -255,7 +263,9 @@ export function extractRulesFromText(
         // (the part before the command, outside brackets: 「（vitest だけでは…）」 is a reason, not a condition)
         const sentence = sentenceWith(base.text, m[0]);
         const lead = sentence.slice(0, sentence.indexOf(m[0])).replace(/[（(][^）)]*[）)]/g, "");
+        // "before pushing to main": the branch is not in the session log
         if (softened(clauseOf(base.text, m[0])) || CONDITIONAL.test(lead)) continue;
+        if (SCOPE.test(sentence.replace(/[（(][^）)]*[）)]/g, ""))) continue;
         const trigger = orderTrigger(base.text, m[0]);
         if (!trigger) continue;
         rules.push({ kind: "run-before", value: cmd, trigger, ...base, text: sentenceWith(base.text, m[0]) });
@@ -284,7 +294,11 @@ export function extractRulesFromText(
           if (!CLI.test(cmd)) continue;
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
           if (cmd.split(/\s+/).length > 4) continue;
-          rules.push({ kind: "forbidden-cmd", value: cmd, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
+          // a scope applies to the whole sentence ("Don't `git switch`, `git reset`, … in the main checkout")
+          const sentence = sentenceWith(base.text, m[0]);
+          const mainOnly = MAIN_CHECKOUT.test(sentence);
+          if (!mainOnly && SCOPE.test(sentence)) continue;
+          rules.push({ kind: "forbidden-cmd", value: cmd, ...base, text: sentence, ...(mainOnly ? { where: "main-checkout" as const } : {}) });
         }
         // 1b) protected paths: "Never edit `dist/`", "`*.lock` を手で書き換えない"
         for (const m of line.matchAll(/`([^`]+)`/g)) {
@@ -296,6 +310,8 @@ export function extractRulesFromText(
             if (
               NEGATION.test(clause) &&
               !softened(clause) &&
+              !SCOPE.test(sentenceWith(base.text, m[0])) &&
+              !MAIN_CHECKOUT.test(sentenceWith(base.text, m[0])) &&
               (FILE_VERB.test(clause) || (/不採用|禁止|厳禁|不可|使わない/.test(clause) && FILE_VERB.test(line)))
             ) {
               rules.push({ kind: "protected-path", value: `*${p}`, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
@@ -309,6 +325,7 @@ export function extractRulesFromText(
           // (the clause that holds this path — "never edit `dist/`, but you may regenerate `build/`")
           const clause = clauseOf(base.text, m[0]);
           if (!NEGATION.test(clause) || !EDIT_VERB.test(clause) || softened(clause)) continue;
+          if (SCOPE.test(sentence) || MAIN_CHECKOUT.test(sentence)) continue;
           rules.push({ kind: "protected-path", value: p.replace(/^\.\//, ""), ...base, text: sentence });
         }
       }
@@ -319,7 +336,7 @@ export function extractRulesFromText(
       // 3) secrets
       const envSentence = sentenceWith(base.text, /\.env/);
       // "`.env` の値はマスクしている" describes the code; it is not a rule for Claude
-      if (/(^|[\s`'"(])\.env\b/.test(line) && NEGATION.test(envSentence) && !softened(clauseOf(base.text, ".env"))) {
+      if (/(^|[\s`'"(])\.env\b/.test(line) && NEGATION.test(envSentence) && !softened(clauseOf(base.text, ".env")) && !SCOPE.test(envSentence)) {
         rules.push({ kind: "no-env", ...base, text: sentenceWith(base.text, /\.env/) });
       }
     }
@@ -355,7 +372,7 @@ export function extractRulesFromText(
   // dedupe (same kind + value in the same file keeps the first line)
   const seen = new Set<string>();
   const unique = rules.filter((r) => {
-    const k = `${r.file}|${r.kind}|${r.value ?? ""}`;
+    const k = `${r.file}|${r.kind}|${r.value ?? ""}|${r.where ?? ""}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;

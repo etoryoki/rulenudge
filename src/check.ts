@@ -187,7 +187,13 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
     }
     switch (rule.kind) {
       case "forbidden-cmd": {
-        const hit = cmds.find((c) => startsWithCommand(c.text, rule.value!));
+        const hit = cmds.find((c) => {
+          if (!startsWithCommand(c.text, rule.value!)) return false;
+          if (rule.where !== "main-checkout") return true;
+          // "…in the main checkout": the same command in a linked worktree is fine
+          const repo = repoInfo(c.cwd);
+          return !!repo && inMainCheckout(c.cwd, repo);
+        });
         if (hit) {
           // the action word the user would have used when asking for it: last non-flag token
           const words = rule.value!.split(/\s+/).filter((w) => !w.startsWith("-"));
@@ -272,7 +278,7 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
   };
 
   const results = new Map<string, RuleResult>();
-  const key = (r: Rule) => `${r.file}|${r.kind}|${r.value ?? ""}`;
+  const key = (r: Rule) => `${r.file}|${r.kind}|${r.value ?? ""}|${r.where ?? ""}`;
   const resultFor = (r: Rule) => {
     let res = results.get(key(r));
     if (!res) {

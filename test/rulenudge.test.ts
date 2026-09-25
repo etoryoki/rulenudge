@@ -412,6 +412,42 @@ describe("run a check before pushing", () => {
     expect(r?.violations[0].what).toContain("packages/bar");
   });
 
+  it("counts packages connected only through tsconfig references or paths", () => {
+    const pkg = (dir: string, json: object) => {
+      mkdirSync(path.join(repo, dir), { recursive: true });
+      writeFileSync(path.join(repo, dir, "package.json"), JSON.stringify(json));
+    };
+    pkg(".", { name: "root", workspaces: ["apps/*", "packages/*", "libs/*"] });
+    pkg("apps/api", { name: "api", scripts: { "type-check": "tsc --noEmit" } });
+    pkg("apps/web", { name: "web", scripts: { "type-check": "tsc --noEmit" } });
+    pkg("packages/types", { name: "@x/types" });
+    pkg("libs/a", { name: "@x/a" });
+    pkg("libs/b", { name: "@x/b" });
+    // api: project references (with a comment and a trailing comma); web: wildcard paths
+    writeFileSync(
+      path.join(repo, "apps", "api", "tsconfig.json"),
+      '{\n  // types are built separately\n  "references": [{ "path": "../../packages/types" },],\n}\n',
+    );
+    writeFileSync(
+      path.join(repo, "apps", "web", "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@x/*": ["../../libs/*/src"] } } }),
+    );
+    commitClaudeMd("- Run `tsc --noEmit` before pushing.\n", Date.now() - 3 * DAY);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "packages", "types", "index.ts"), at: t },
+      { bash: "pnpm --filter api type-check && git push", at: t + 100 },
+      { tool: "Edit", file: path.join(repo, "libs", "b", "src", "index.ts"), at: t + 200 },
+      { bash: "pnpm --filter web type-check && git push", at: t + 300 },
+      // web does not reach packages/types
+      { tool: "Edit", file: path.join(repo, "packages", "types", "index.ts"), at: t + 400 },
+      { bash: "pnpm --filter web type-check && git push", at: t + 500 },
+    ]);
+    const r = verdictOf("run-before");
+    expect(r?.violations).toHaveLength(1);
+    expect(r?.violations[0].what).toContain("packages/types");
+  });
+
   it("counts a pre-push hook that runs the check, unless hooks are skipped", () => {
     setupTypeCheck("#!/usr/bin/env sh\n# type check before push\npnpm run type-check\n");
     const t = Date.now() - DAY;
@@ -424,6 +460,44 @@ describe("run a check before pushing", () => {
     const r = verdictOf("run-before");
     expect(r?.violations.map((v) => v.what)).toHaveLength(1);
     expect(r?.violations[0].what).toContain("--no-verify");
+  });
+});
+
+describe("rules scoped to a branch, an environment or the main checkout", () => {
+  const read = (line: string) =>
+    extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}:${r.where ?? ""}`);
+
+  it("does not read branch or environment scopes as plain prohibitions", () => {
+    expect(read("- Never run `terraform apply` on main.")).toEqual([]);
+    expect(read("- Never `git push --force` to main.")).toEqual([]);
+    expect(read("- Don't run `npm publish` in production.")).toEqual([]);
+    expect(read("- main ブランチに `git push` しない")).toEqual([]);
+    expect(read("- 本番環境で `prisma migrate reset` を実行しない")).toEqual([]);
+    expect(read("- Never edit `dist/` on the release branch.")).toEqual([]);
+    expect(read("- Run `pnpm lint` before pushing to main.")).toEqual([]);
+    // not scopes: a file name with "main" in it, a folder
+    expect(read("- Never edit `src/main.ts` by hand.")).toEqual(["protected-path:src/main.ts:"]);
+    expect(read("- Never run `rm -rf` in the root folder.")).toEqual(["forbidden-cmd:rm -rf:"]);
+  });
+
+  it("reads 'in the main checkout' as a rule for the main checkout only", () => {
+    expect(
+      read("- Don't `git switch`, `git reset`, or edit files in the main checkout, and don't touch another session's worktree or branch."),
+    ).toEqual(["forbidden-cmd:git switch:main-checkout", "forbidden-cmd:git reset:main-checkout"]);
+  });
+
+  it("flags the command in the main checkout, not in a linked worktree", () => {
+    commitClaudeMd("- Don't `git switch` in the main checkout.\n", Date.now() - 3 * DAY);
+    const wt = path.join(path.dirname(repo), `${path.basename(repo)}-wt`);
+    git(["worktree", "add", "-q", wt, "-b", "wt"], repo);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { bash: `cd "${wt}" && git switch -c feature`, at: t },
+      { bash: "git switch main", at: t + 100 },
+    ]);
+    const r = verdictOf("forbidden-cmd", "git switch");
+    expect(r?.violations.map((v) => v.what)).toEqual(["git switch main"]);
+    rmSync(wt, { recursive: true, force: true });
   });
 });
 

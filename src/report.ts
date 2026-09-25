@@ -24,7 +24,7 @@ function short(s: string, n: number): string {
   return one.length > n ? one.slice(0, n - 1) + "…" : one;
 }
 
-export function renderReport(res: CheckResult, days: number): string {
+export function renderReport(res: CheckResult, days: number, hookInstalled = false): string {
   const out: string[] = [];
   const by = (v: string) => res.results.filter((r) => r.verdict === v);
   const violated = by("violated").sort((a, b) => b.violations.length - a.violations.length);
@@ -91,6 +91,11 @@ export function renderReport(res: CheckResult, days: number): string {
     out.push("");
   }
 
+  if (hookInstalled) {
+    out.push("  The SessionStart hook is on: broken rules are reminded at the start of each session.");
+    out.push("");
+    return out.join("\n");
+  }
   out.push(`  ${DIV}`);
   out.push("  Next: remind Claude of broken rules at the start of each session");
   out.push(`  ${DIV}`);

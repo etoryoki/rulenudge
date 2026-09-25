@@ -52,6 +52,16 @@ function onPath(): boolean {
   return r.status === 0;
 }
 
+/** Is the rulenudge SessionStart hook already in ~/.claude/settings.json? */
+export function hookInstalled(): boolean {
+  try {
+    const hooks = (load().hooks ?? {}) as Record<string, HookEntry[]>;
+    return (hooks.SessionStart ?? []).some(isOurs);
+  } catch {
+    return false;
+  }
+}
+
 export function installHook(): void {
   const settings = load();
   const hooks = (settings.hooks ?? {}) as Record<string, HookEntry[]>;

@@ -72,7 +72,8 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result, null, 2));
   } else {
     const { renderReport } = await import("./report.js");
-    console.log(renderReport(result, days));
+    const { hookInstalled } = await import("./install.js");
+    console.log(renderReport(result, days, hookInstalled()));
   }
   process.exitCode = result.results.some((r) => r.verdict === "violated") ? 1 : 0;
 }

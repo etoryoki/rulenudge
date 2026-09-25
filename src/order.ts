@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileRoot, isUnder, norm, ruleCovers, worktreeRoot } from "./git.js";
 import type { Rule } from "./rules.js";
 import type { ToolEvent } from "./sessions.js";
-import { runsCheck } from "./scripts.js";
+import { checkCoverage, packageOf, packagesOf } from "./scripts.js";
 import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
 
 const TEST_CMD =
@@ -165,7 +165,8 @@ export class AmendAfterPushTracker implements OrderTracker {
 }
 
 /** A git hook in the checkout (husky or .git/hooks) that runs the check on this action. */
-function hookRuns(root: string, hook: string, cmd: string): boolean {
+function hookCoverage(root: string, hook: string, cmd: string): string[] | null {
+  let covered: string[] | null = null;
   for (const file of [path.join(root, ".husky", hook), path.join(root, ".git", "hooks", hook)]) {
     let body: string;
     try {
@@ -173,11 +174,17 @@ function hookRuns(root: string, hook: string, cmd: string): boolean {
     } catch {
       continue;
     }
-    const lines = body.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
-    if (lines.some((l) => runsCheck(l.trim(), cmd, root, root))) return true;
+    for (const l of body.split(/\r?\n/)) {
+      if (!l.trim() || l.trim().startsWith("#")) continue;
+      const c = checkCoverage(l.trim(), cmd, root, root);
+      if (c) covered = [...(covered ?? []), ...c];
+    }
   }
-  return false;
+  return covered;
 }
+
+// edits outside every workspace package (root config, scripts/, CI files): any run of the check clears them
+const ROOT_LEVEL = "<root>";
 
 /**
  * "Run `x` before pushing / committing": after a code change in a session, the check must run
@@ -185,8 +192,15 @@ function hookRuns(root: string, hook: string, cmd: string): boolean {
  * unless the push / commit skips hooks with --no-verify.
  */
 export class RunBeforeTracker implements OrderTracker {
-  /** key = sessionId|repoRoot → code changed since the check last ran */
-  private dirty = new Map<string, boolean>();
+  /** key = sessionId|repoRoot → packages (folders) with code changes the check has not covered since */
+  private dirty = new Map<string, Set<string>>();
+
+  private clear(k: string, covered: string[]): void {
+    const set = this.dirty.get(k);
+    if (!set) return;
+    set.delete(ROOT_LEVEL);
+    for (const d of covered) set.delete(d);
+  }
 
   constructor(
     private readonly rule: Rule,
@@ -204,7 +218,13 @@ export class RunBeforeTracker implements OrderTracker {
       const file = fileOf(ev);
       if (!file || NOT_CODE.test(file)) return null;
       const root = fileRoot(file);
-      if (root && this.inScope(root)) this.dirty.set(`${ev.sessionId}|${norm(root)}`, true);
+      if (!root || !this.inScope(root)) return null;
+      // the package the file belongs to; in a monorepo, files outside every package are root-level
+      const pkgs = packagesOf(root);
+      const pkg = packageOf(pkgs, file);
+      const which = !pkg || (norm(pkg.dir) === norm(root) && pkgs.length > 1) ? ROOT_LEVEL : norm(pkg.dir);
+      const k = `${ev.sessionId}|${norm(root)}`;
+      this.dirty.set(k, (this.dirty.get(k) ?? new Set<string>()).add(which));
       return null;
     }
     if ((ev.tool !== "Bash" && ev.tool !== "PowerShell") || typeof ev.input.command !== "string") return null;
@@ -212,8 +232,9 @@ export class RunBeforeTracker implements OrderTracker {
       const root = worktreeRoot(c.cwd);
       if (!root || !this.inScope(root)) continue;
       const k = `${ev.sessionId}|${norm(root)}`;
-      if (runsCheck(c.text, cmd, root, c.cwd)) {
-        this.dirty.set(k, false);
+      const covered = checkCoverage(c.text, cmd, root, c.cwd);
+      if (covered) {
+        this.clear(k, covered);
         continue;
       }
       const isTrigger =
@@ -221,18 +242,21 @@ export class RunBeforeTracker implements OrderTracker {
           ? /^git\s+push\b/.test(c.text) && !/\s(?:-n|--dry-run)\b/.test(c.text)
           : COMMIT.test(c.text) && !/--amend\b/.test(c.text);
       if (!isTrigger) continue;
-      if (this.dirty.get(k) !== true) continue;
+      if (!this.dirty.get(k)?.size) continue;
       // (`git push -n` is a dry run; `git commit -n` skips hooks)
       const noVerify = (trigger === "push" ? /\s--no-verify\b/ : /\s(?:--no-verify|-n)\b/).test(c.text);
-      if (!noVerify && hookRuns(root, trigger === "push" ? "pre-push" : "pre-commit", cmd)) {
-        this.dirty.set(k, false);
-        continue;
+      if (!noVerify) {
+        const byHook = hookCoverage(root, trigger === "push" ? "pre-push" : "pre-commit", cmd);
+        if (byHook) this.clear(k, byHook);
+        if (!this.dirty.get(k)?.size) continue;
       }
-      this.dirty.set(k, false);
+      const left = [...this.dirty.get(k)!].map((d) => (d === ROOT_LEVEL ? "." : path.relative(root, d).replace(/\\/g, "/") || "."));
+      this.dirty.delete(k);
+      const where = left.length && !(left.length === 1 && left[0] === ".") ? ` in ${left.join(", ")}` : "";
       return {
         ts: ev.ts,
         sessionId: ev.sessionId,
-        what: `${unquote(c.text).slice(0, 80)}  (files were edited, \`${cmd}\` not run since${noVerify ? "; hooks skipped with --no-verify" : ""})`,
+        what: `${unquote(c.text).slice(0, 80)}  (files were edited${where}, \`${cmd}\` not run on them since${noVerify ? "; hooks skipped with --no-verify" : ""})`,
         unclear: userSkipped(ev, cmd),
       };
     }

@@ -383,6 +383,35 @@ describe("run a check before pushing", () => {
     expect(runs("pnpm lint")).toBe(false);
   });
 
+  it("tracks edits per package: a check on another package does not cover them", () => {
+    const pkg = (dir: string, json: object) => {
+      mkdirSync(path.join(repo, dir), { recursive: true });
+      writeFileSync(path.join(repo, dir, "package.json"), JSON.stringify(json));
+    };
+    pkg(".", { name: "root", workspaces: ["packages/*"] });
+    pkg("packages/foo", { name: "foo", scripts: { build: "tsc --noEmit" }, dependencies: { "@x/types": "workspace:*" } });
+    pkg("packages/bar", { name: "bar", scripts: { build: "webpack" } });
+    pkg("packages/types", { name: "@x/types" });
+    commitClaudeMd("- Run `tsc --noEmit` before pushing.\n", Date.now() - 3 * DAY);
+    const t = Date.now() - DAY;
+    session("s1", repo, [
+      { tool: "Edit", file: path.join(repo, "packages", "bar", "src", "x.ts"), at: t },
+      { bash: "pnpm --filter foo build && git push", at: t + 100 },
+    ]);
+    session("s2", repo, [
+      { tool: "Edit", file: path.join(repo, "packages", "foo", "src", "x.ts"), at: t + 200 },
+      { tool: "Edit", file: path.join(repo, "scripts", "release.ts"), at: t + 300 },
+      // foo depends on @x/types: foo's tsc checks it too
+      { tool: "Edit", file: path.join(repo, "packages", "types", "index.ts"), at: t + 350 },
+      { bash: "pnpm --filter foo build && git push", at: t + 400 },
+      { tool: "Edit", file: path.join(repo, "packages", "bar", "src", "y.ts"), at: t + 500 },
+      { bash: "npx tsc --noEmit && git push", at: t + 600 },
+    ]);
+    const r = verdictOf("run-before");
+    expect(r?.violations.map((v) => v.sessionId)).toEqual(["s1"]);
+    expect(r?.violations[0].what).toContain("packages/bar");
+  });
+
   it("counts a pre-push hook that runs the check, unless hooks are skipped", () => {
     setupTypeCheck("#!/usr/bin/env sh\n# type check before push\npnpm run type-check\n");
     const t = Date.now() - DAY;

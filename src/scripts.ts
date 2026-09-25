@@ -8,10 +8,12 @@ import path from "node:path";
 import { isUnder, norm } from "./git.js";
 import { unquote } from "./shell.js";
 
-interface Pkg {
+export interface Pkg {
   dir: string;
   name: string;
   scripts: Record<string, string>;
+  /** names of everything it depends on (dependencies, devDependencies, peerDependencies) */
+  deps: string[];
 }
 
 const cache = new Map<string, Pkg[]>();
@@ -21,8 +23,12 @@ function readPkg(dir: string): Pkg | null {
     const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as {
       name?: string;
       scripts?: Record<string, string>;
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
     };
-    return { dir, name: pkg.name ?? path.basename(dir), scripts: pkg.scripts ?? {} };
+    const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.peerDependencies });
+    return { dir, name: pkg.name ?? path.basename(dir), scripts: pkg.scripts ?? {}, deps };
   } catch {
     return null;
   }
@@ -214,27 +220,70 @@ function targets(pkgs: Pkg[], root: string, call: Call, cwd: string, from: Pkg |
   return inside.slice(0, 1);
 }
 
-/** Does this package's script (through the scripts it calls) run `cmd`? */
-function scriptRuns(pkgs: Pkg[], root: string, pkg: Pkg, script: string, cmd: string, seen: Set<string>): boolean {
+/** The package that holds `p` (the deepest one), or null. */
+export function packageOf(pkgs: Pkg[], p: string): Pkg | null {
+  return pkgs.filter((x) => isUnder(p, x.dir)).sort((a, b) => b.dir.length - a.dir.length)[0] ?? null;
+}
+
+/**
+ * Packages a check run in `dir` covers: the package there, every package below it, and the
+ * workspace packages they depend on (tsc in apps/api also checks the @x/types it imports).
+ */
+function coveredBy(pkgs: Pkg[], dir: string): string[] {
+  const here = packageOf(pkgs, dir);
+  const todo = pkgs.filter((x) => isUnder(x.dir, dir));
+  if (here) todo.push(here);
+  const byName = new Map(pkgs.map((x) => [x.name, x]));
+  const out = new Set<string>();
+  while (todo.length) {
+    const p = todo.pop()!;
+    if (out.has(norm(p.dir))) continue;
+    out.add(norm(p.dir));
+    for (const d of p.deps) {
+      const dep = byName.get(d);
+      if (dep) todo.push(dep);
+    }
+  }
+  return [...out];
+}
+
+/** Does this package's script (through the scripts it calls) run `cmd`? Adds the covered packages. */
+function scriptRuns(pkgs: Pkg[], root: string, pkg: Pkg, script: string, cmd: string, seen: Set<string>, out: Set<string>): boolean {
   const k = `${norm(pkg.dir)}|${script}`;
   if (seen.has(k)) return false;
   seen.add(k);
   const body = pkg.scripts[script];
   if (body === undefined) return false;
-  return body.split(/&&|\|\||;/).some((part) => {
+  let ran = false;
+  for (const part of body.split(/&&|\|\||;/)) {
     const p = part.trim();
-    if (runsDirectly(p, cmd)) return true;
+    if (runsDirectly(p, cmd)) {
+      for (const d of coveredBy(pkgs, pkg.dir)) out.add(d);
+      ran = true;
+      continue;
+    }
     const call = parseCall(p);
-    if (!call) return false;
-    return targets(pkgs, root, call, pkg.dir, pkg).some((t) => scriptRuns(pkgs, root, t, call.script, cmd, seen));
-  });
+    if (!call) continue;
+    for (const t of targets(pkgs, root, call, pkg.dir, pkg)) if (scriptRuns(pkgs, root, t, call.script, cmd, seen, out)) ran = true;
+  }
+  return ran;
 }
 
-/** Does the command run the check, directly or through a package script? */
-export function runsCheck(text: string, cmd: string, root: string, cwd: string): boolean {
-  if (runsDirectly(text, cmd)) return true;
-  const call = parseCall(text);
-  if (!call) return false;
+/**
+ * Does the command run the check, directly or through a package script? Returns the packages
+ * it covered (normalized folders), or null when it is not a run of the check.
+ */
+export function checkCoverage(text: string, cmd: string, root: string, cwd: string): string[] | null {
   const pkgs = packagesOf(root);
-  return targets(pkgs, root, call, cwd, null).some((t) => scriptRuns(pkgs, root, t, call.script, cmd, new Set()));
+  if (runsDirectly(text, cmd)) return coveredBy(pkgs, cwd);
+  const call = parseCall(text);
+  if (!call) return null;
+  const out = new Set<string>();
+  let ran = false;
+  for (const t of targets(pkgs, root, call, cwd, null)) if (scriptRuns(pkgs, root, t, call.script, cmd, new Set(), out)) ran = true;
+  return ran ? [...out] : null;
+}
+
+export function runsCheck(text: string, cmd: string, root: string, cwd: string): boolean {
+  return checkCoverage(text, cmd, root, cwd) !== null;
 }

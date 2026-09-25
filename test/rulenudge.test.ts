@@ -499,6 +499,12 @@ describe("rules scoped to a branch, an environment or the main checkout", () => 
     expect(read("- Don't `git reset` in the root checkout.")).toEqual(["forbidden-cmd:git reset:main-checkout"]);
     expect(read("- Don't `git reset` in the main worktree.")).toEqual(["forbidden-cmd:git reset:main-checkout"]);
     expect(read("- 本体のチェックアウトで `git switch` しない")).toEqual(["forbidden-cmd:git switch:main-checkout"]);
+    // 「では」 here names the place; it is not a condition
+    expect(read("- メインの作業ツリーでは `git switch` しないこと。")).toEqual(["forbidden-cmd:git switch:main-checkout"]);
+    expect(read("- メインのチェックアウトでは `git reset` を実行しない")).toEqual(["forbidden-cmd:git reset:main-checkout"]);
+    // …but a real condition in the same sentence still counts
+    expect(read("- 急ぎの場合はメインのチェックアウトでは `git reset` を実行しない")).toEqual([]);
+    expect(read("- Don't `git reset` in the team's checkout.")).toEqual([]);
     // some other checkout: not judged
     expect(read("- Don't `git reset` in the deploy checkout.")).toEqual([]);
   });

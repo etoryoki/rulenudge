@@ -40,7 +40,8 @@ export interface RuleSet {
   uncheckable: Uncheckable[];
 }
 
-export const NEGATION = /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited)\b|禁止|しない(?:こと|で)?|使わない|触らない|触れない|読まない|実行しない|書き換えない|変えない|いじらない|消さない|入れない|してはいけない|してはならない|してはダメ|しては駄目|べきではない|べきでない|行わない|やらない/i;
+export const NEGATION =
+  /\b(never|don['’]t|do not|must not|mustn['’]t|shall not|not allowed|forbidden|prohibited|avoid)\b|禁止|厳禁|不可|不採用|避ける|避けて|しない(?:こと|で)?|使わない|触らない|触れない|読まない|書かない|作らない|置かない|残さない|送らない|押さない|含めない|入れない|書き換えない|変えない|いじらない|消さない|行わない|やらない|走らせない|[てで]は(?:いけない|いけません|ならない|なりません|だめ|ダメ|駄目)|べきではない|べきでない/i;
 const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;
 const BULLET = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const EDIT_VERB = /\b(?:edit|modify|change|touch|write|overwrite|update|hand-edit|alter)\b|編集|変更|書き換え|手で|触|修正|更新|いじ/i;
@@ -58,7 +59,11 @@ const ORDER_WORD = /\bbefore\b|\bpass(?:es|ing)?\b|\bgreen\b|\bwithout\b|前に|
 // "you can commit before running the suite; CI will run the tests") — never turn them into rules
 const EXEMPTION =
   /\b(?:can|may|okay|ok|fine|allowed to)\b[^.]*\bcommit|\b(?:don['’]t|do not|doesn['’]t|does not|no)\s+(?:need|require)|\bnot\s+(?:needed|required|necessary)\b|\bno need\b|\bCI\s+(?:will|runs?|handles?)\b|\boptional\b|不要|いらない|しなくて(?:も)?(?:いい|良い|よい|構わない)|(?:なく|なし|無し)でも(?:いい|良い|よい|構わない|OK)|でも構わない|省略(?:して|可)|任意/i;
-const CLAUSE_BREAK = /;|。|\binstead\b|\bbut\b|代わりに|ではなく/i;
+const JA_RULE_END =
+  // (not 〜ではない / 〜れない / 〜できない: descriptions such as 「全許可ではない」「では行われない」)
+  /(?:(?<![でれきがはく])ない|ないこと|ないで(?:ください)?|ないように|てください|でください|すること|こと|べき|べからず|禁止|厳禁|不可|不採用|必須|厳守|徹底)[。．.！!]?$/;
+const FILE_VERB = /\b(?:save|write|create|generate)s?\b|\bfiles?\b|保存|作成|生成|書き出|出力|ファイル/i;
+const CLAUSE_BREAK =/;|。|\binstead\b|\bbut\b|代わりに|ではなく/i;
 const CLAUSE_SPLIT = /[,;、]|\bbut\b|けど|けれど|が、/i;
 const CLI =/^(git|gh|npm|pnpm|yarn|bun|npx|pnpx|bunx|rm|docker|kubectl|helm|terraform|cdk|aws|gcloud|az|curl|wget|pip|pip3|python|python3|node|make|cargo|go|chmod|chown|psql|mysql|vercel|firebase|supabase|prisma|drizzle-kit)\b/;
 const PMS = ["npm", "pnpm", "yarn", "bun"] as const;
@@ -172,9 +177,17 @@ export function extractRulesFromText(
         for (const m of line.matchAll(/`([^`]+)`/g)) {
           const cmd = m[1].trim();
           const idx = m.index ?? 0;
-          if (idx < neg || idx - neg > 80) continue;
-          // "Don't hand-edit `x`; run `npm install` instead": the command is in another clause
-          if (CLAUSE_BREAK.test(line.slice(neg, idx))) continue;
+          if (idx < neg) {
+            // Japanese order: the command comes first ("`git push --force` を使ってはいけない").
+            // The prohibition must follow closely, with no other code span in between.
+            const after = line.slice(idx + m[0].length);
+            const n = after.match(NEGATION);
+            if (!n || (n.index ?? 0) > 12 || after.slice(0, n.index).includes("`")) continue;
+          } else {
+            if (idx - neg > 80) continue;
+            // "Don't hand-edit `x`; run `npm install` instead": the command is in another clause
+            if (CLAUSE_BREAK.test(line.slice(neg, idx))) continue;
+          }
           if (amendRule && /--amend\b/.test(cmd)) continue;
           if (!CLI.test(cmd)) continue;
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
@@ -184,6 +197,15 @@ export function extractRulesFromText(
         // 1b) protected paths: "Never edit `dist/`", "`*.lock` を手で書き換えない"
         for (const m of line.matchAll(/`([^`]+)`/g)) {
           const p = m[1].trim();
+          // a file type: "save as `.md` (`.txt` は不採用)", "Never create `.txt` files"
+          if (/^\.[A-Za-z0-9]{1,8}$/.test(p) && !/^\.env$/i.test(p)) {
+            const clause = sentenceWith(base.text, "`" + m[1] + "`").split(CLAUSE_SPLIT).find((c) => c.includes("`" + m[1] + "`"));
+            // "never commit `.log` output" bans committing, not the file type
+            if (clause && NEGATION.test(clause) && (FILE_VERB.test(clause) || (/不採用|禁止|厳禁|不可|使わない/.test(clause) && FILE_VERB.test(line)))) {
+              rules.push({ kind: "protected-path", value: `*${p}`, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
+            }
+            continue;
+          }
           if (!looksLikePath(p) || CLI.test(p) || /^\.env\b/.test(p)) continue;
           const sentence = sentenceWith(base.text, "`" + m[1] + "`");
           // the negation and the edit verb must be in the same clause:
@@ -220,10 +242,13 @@ export function extractRulesFromText(
     // A line is rule-like when one of its sentences starts with an instruction word,
     // or it says must / 必ず / 禁止. "…and never aborts the scan" (description) is not.
     const sentences = line.replace(/^[-*+]\s+|^\d+[.)]\s+|\*\*/g, "").split(/(?<=[.!?。！？])\s*/);
+    // Japanese rules end in a request or a prohibition: 〜しない。/ 〜すること / 〜してください
     const isRuleLike =
-      sentences.some((s) =>
-        /^(never|don['’]t|do not|always|must|make sure|avoid|only|use|run|prefer|keep|write|put)\b/i.test(s.trim()),
-      ) || /\bmust\b|必ず|禁止|しないこと|すること|厳守/i.test(line);
+      sentences.some(
+        (s) =>
+          /^(never|don['’]t|do not|always|must|make sure|avoid|only|use|run|prefer|keep|write|put|please)\b/i.test(s.trim()) ||
+          JA_RULE_END.test(s.replace(/[（(][^）)]*[）)]\s*$/, "").trim()),
+      ) || /\bmust\b|必ず|禁止|厳禁|しないこと|すること|厳守/i.test(line);
     if (rules.length === before && isRuleLike && (BULLET.test(raw) || /^\*\*/.test(line))) {
       uncheckable.push({ text: base.text, file, line: i + 1 });
     }

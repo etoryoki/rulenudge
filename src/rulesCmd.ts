@@ -36,7 +36,7 @@ export function describeRule(r: Rule): string {
     case "no-amend-pushed":
       return "never amends a commit that was already pushed";
     case "protected-path":
-      return `never edits \`${r.value}\``;
+      return /^\*\.[A-Za-z0-9]+$/.test(r.value ?? "") ? `never writes ${r.value!.slice(1)} files` : `never edits \`${r.value}\``;
     case "test-before-commit":
       return `runs tests${r.value ? ` (\`${r.value}\`)` : ""} before committing code changes`;
   }

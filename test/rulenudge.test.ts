@@ -390,6 +390,29 @@ describe("protected paths", () => {
     ]);
   });
 
+  it("reads file-type rules", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    expect(
+      read("- **生成ファイルはすべて Markdown 形式（`.md`）で保存する**（メール文面含む、プレーンテキスト `.txt` は不採用）。"),
+    ).toEqual(["protected-path:*.txt"]);
+    expect(read("- Never create `.txt` files; save notes as `.md`.")).toEqual(["protected-path:*.txt"]);
+    // exception / other clause / not about files
+    expect(read("- `.txt` ファイルも作成して構わない")).toEqual([]);
+    expect(read("- Save notes as `.md`, but never commit `.log` output.")).toEqual([]);
+    expect(read("- Never read `.env` files.")).toEqual(["no-env:"]);
+  });
+
+  it("flags a .txt file written under a file-type rule", () => {
+    commitClaudeMd("- 生成ファイルは `.md` で保存する（`.txt` は不採用）。\n", Date.now() - 3 * DAY);
+    session("s1", repo, [
+      { tool: "Write", file: path.join(repo, "notes", "a.md"), at: Date.now() - DAY },
+      { tool: "Write", file: path.join(repo, "notes", "a.txt"), at: Date.now() - DAY + 100 },
+    ]);
+    const r = verdictOf("protected-path");
+    expect(r?.violations).toHaveLength(1);
+  });
+
   it("checks folder patterns from the global CLAUDE.md against the file's repository", () => {
     const global = path.join(home, ".claude", "CLAUDE.md");
     mkdirSync(path.dirname(global), { recursive: true });
@@ -447,6 +470,37 @@ describe("rules command", () => {
       0,
     );
     expect(uncheckable.map((u) => u.line)).toEqual([2, 3, 4]);
+  });
+
+  it("lists Japanese and 'Please' rules, not Japanese descriptions", () => {
+    const { rules, uncheckable } = extractRulesFromText(
+      [
+        "- オーナーの承認なく、会社の方針・組織・予算の大枠を変更しない。",
+        "- **簡潔**: 報告・提案は要点から。冗長な前置きや定型句を並べない。",
+        "- Please use TypeScript.",
+        "- 不明点は確認してください",
+        "- Koji は株式会社クインクエの事業として展開されるが、経営判断は Koji 内で完結する",
+        "- **氏名**: 瀬尾（せお）",
+        "- `infra/cdk` は npm で別管理（ルートの pnpm install だけでは入らない）",
+        "- フロントエンドのデプロイは GitHub Actions では行われない。",
+        "- CORS は全オリジン許可ではない。",
+      ].join("\n"),
+      "CLAUDE.md",
+      null,
+      0,
+    );
+    expect(rules).toEqual([]);
+    expect(uncheckable.map((u) => u.line)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("reads more Japanese prohibitions", () => {
+    const read = (line: string) =>
+      extractRulesFromText(line, "CLAUDE.md", null, 0).rules.map((r) => `${r.kind}:${r.value ?? ""}`);
+    expect(read("- `git push --force` を使ってはいけない")).toEqual(["forbidden-cmd:git push --force"]);
+    expect(read("- `rm -rf` は厳禁")).toEqual(["forbidden-cmd:rm -rf"]);
+    expect(read("- `dist/` を手で書いてはならない")).toEqual(["protected-path:dist/"]);
+    // not a prohibition: the command in a condition
+    expect(read("- `pnpm test` が通らない場合は原因を調べる")).toEqual([]);
   });
 
   it("gives a rewrite hint for commands written without backticks", async () => {

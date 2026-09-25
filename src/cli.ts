@@ -6,6 +6,7 @@ const HELP = `rulenudge — check whether your CLAUDE.md rules were actually fol
 
 Usage:
   rulenudge [--days N] [--project DIR] [--json]   check recent Claude Code sessions
+  rulenudge rules [--project DIR]                 which rules are checked, which aren't, and how to fix them
   rulenudge install-hook                          remind Claude of broken rules at session start
   rulenudge uninstall-hook                        remove the hook
   rulenudge statusline [--always]                 "📏 N broken" for the current project (Claude Code statusLine)
@@ -36,6 +37,11 @@ async function main(): Promise<void> {
   if (cmd === "hook") {
     const { runHook } = await import("./hook.js");
     return void (await runHook());
+  }
+  if (cmd === "rules") {
+    const { renderRules } = await import("./rulesCmd.js");
+    const path = await import("node:path");
+    return void console.log(renderRules(path.resolve(arg(args, "--project") ?? process.cwd())));
   }
   if (cmd === "statusline") {
     const { runStatusline } = await import("./statusline.js");

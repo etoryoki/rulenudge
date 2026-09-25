@@ -53,6 +53,7 @@ export function renderReport(res: CheckResult, days: number): string {
   out.push(`    ? unclear          ${unclear.length}   (you had just asked for it)`);
   out.push(`    - not applicable   ${na.length}   (rule added later, or no session ran under it)`);
   if (res.uncheckable.length) out.push(`    · not checkable    ${res.uncheckable.length}   (needs judgement — not checked yet)`);
+  if (res.uncheckable.length) out.push("  See which rules are checked and how to make more of them checkable:  rulenudge rules");
   out.push("");
 
   if (violated.length) {

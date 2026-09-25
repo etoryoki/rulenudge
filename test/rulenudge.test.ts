@@ -105,7 +105,8 @@ describe("rule extraction", () => {
       0,
     );
     expect(rules.map((r) => r.value)).toEqual(["git push --force"]);
-    expect(uncheckable.map((u) => u.text)).toEqual(["Never reply in English."]);
+    // "Don't forget to run …" is an instruction (listed as not checkable), not a prohibition
+    expect(uncheckable.map((u) => u.text)).toEqual(["Don't forget to run `pnpm build` first.", "Never reply in English."]);
   });
 
   it("detects merge, .env, package manager and worktree rules", () => {
@@ -123,6 +124,41 @@ describe("rule extraction", () => {
     expect(rules.map((r) => `${r.kind}:${r.value ?? ""}`).sort()).toEqual(
       ["forbidden-cmd:gh pr merge", "no-env:", "package-manager:pnpm", "worktree-only:"].sort(),
     );
+  });
+});
+
+describe("rules command", () => {
+  it("lists rule-like lines but not descriptions", () => {
+    const { uncheckable } = extractRulesFromText(
+      [
+        "- Each worker is wrapped so a failure never aborts the scan.",
+        "- Non-WordPress sites get a placeholder score. Don't let empty findings produce a score of 100.",
+        "- Always reply in Japanese.",
+        "- 検証は必ず `origin/develop` 基準で行う。",
+        "- The dashboard lives in apps/web.",
+      ].join("\n"),
+      "CLAUDE.md",
+      null,
+      0,
+    );
+    expect(uncheckable.map((u) => u.line)).toEqual([2, 3, 4]);
+  });
+
+  it("gives a rewrite hint for commands written without backticks", async () => {
+    const { hintFor } = await import("../src/rulesCmd.js");
+    expect(hintFor({ text: "Never git push --force to main", file: "x", line: 1 })).toContain("`git push --force to main`");
+    expect(hintFor({ text: "Always run the tests before you commit", file: "x", line: 1 })).toContain("planned");
+    expect(hintFor({ text: "Keep functions small", file: "x", line: 1 })).toContain("judgement");
+  });
+
+  it("prints checked and not-checked rules for a directory", async () => {
+    commitClaudeMd("- Never run `git push --force`.\n- Always reply in Japanese.\n", Date.now() - DAY);
+    const { renderRules } = await import("../src/rulesCmd.js");
+    const out = renderRules(repo);
+    expect(out).toContain("✓ checked (1)");
+    expect(out).toContain("never runs `git push --force`");
+    expect(out).toContain("· not checked (1)");
+    expect(out).toContain("Always reply in Japanese.");
   });
 });
 

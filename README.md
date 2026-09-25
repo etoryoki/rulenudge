@@ -49,6 +49,15 @@ Follow these rules in this session. If the user explicitly asks for one of these
 
 Each violation is reminded once. With no new violations, you only see one line (`no new violations`). Remove it with `rulenudge uninstall-hook`.
 
+## See which rules are checked
+
+```sh
+npx rulenudge rules            # current directory
+npx rulenudge rules --project ~/code/my-app
+```
+
+Lists every rule-like line in the CLAUDE.md / AGENTS.md files that apply to the directory: the ones rulenudge checks (and since when), and the ones it doesn't, with a hint — for example, a command written without backticks (`Never git push --force`) becomes checkable when written as ``Never run `git push --force` ``. Descriptions of how the code works are not listed.
+
 ## Show the count in your statusline
 
 ```json

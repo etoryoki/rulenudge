@@ -133,7 +133,14 @@ export function extractRulesFromText(
       rules.push({ kind: "worktree-only", ...base });
     }
 
-    if (rules.length === before && isNegated && (BULLET.test(raw) || /^\*\*/.test(line))) {
+    // A line is rule-like when one of its sentences starts with an instruction word,
+    // or it says must / 必ず / 禁止. "…and never aborts the scan" (description) is not.
+    const sentences = line.replace(/^[-*+]\s+|^\d+[.)]\s+|\*\*/g, "").split(/(?<=[.!?。！？])\s*/);
+    const isRuleLike =
+      sentences.some((s) =>
+        /^(never|don['’]t|do not|always|must|make sure|avoid|only|use|run|prefer|keep|write|put)\b/i.test(s.trim()),
+      ) || /\bmust\b|必ず|禁止|しないこと|すること|厳守/i.test(line);
+    if (rules.length === before && isRuleLike && (BULLET.test(raw) || /^\*\*/.test(line))) {
       uncheckable.push({ text: base.text, file, line: i + 1 });
     }
   });

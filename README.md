@@ -112,6 +112,7 @@ Exit code is `1` when a rule was broken (useful in scripts), `0` otherwise.
 ## Limitations
 
 - Rules that need judgement ("reply in Japanese", "keep functions small") are not checked.
+- "Run `x` before pushing" in a monorepo: edits are tracked per workspace package. A run of the check covers the packages it ran in and the workspace packages they depend on — as declared in `package.json` (`dependencies`, `devDependencies`, `peerDependencies`). Packages connected only through tsconfig `paths` / `references` are not seen as covered, so such a push can be reported although the check did look at them.
 - "Unclear" means one of your last three messages mentioned that action (e.g. "merge", "push", the file name) in a sentence that was not a prohibition. A loosely related message can therefore turn a real violation into "unclear" — the evidence is always shown so you can judge.
 - Commands inside quoted strings (`bash -c "git push --force"`, `"$(…)"`) are not inspected.
 - Claude Code loads CLAUDE.md from the folder a session **started** in. When a session started in project A changes files or runs commits in project B, B's CLAUDE.md was never in Claude's context — rulenudge lists this under "Rules that were never loaded" instead of counting violations. (Other worktrees of the same repository carry the same CLAUDE.md and are treated as loaded.)

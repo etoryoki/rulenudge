@@ -86,10 +86,10 @@ export function renderReport(res: CheckResult, days: number, hookInstalled = fal
 
   if (res.unloaded.length) {
     out.push(`  ${DIV}`);
-    out.push("  Rules that were never loaded");
+    out.push("  Rules that may not have been loaded");
     out.push(`  ${DIV}`);
     out.push("  These projects were changed from sessions that started in another folder,");
-    out.push("  so their CLAUDE.md was not in Claude's context (not counted as violations):");
+    out.push("  so their CLAUDE.md may not have been in Claude's context (not counted as violations):");
     for (const u of res.unloaded.slice(0, 5)) {
       out.push("");
       out.push(`  ! ${u.dir}`);

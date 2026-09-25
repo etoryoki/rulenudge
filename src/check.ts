@@ -38,7 +38,26 @@ export interface CheckResult {
   uncheckable: Uncheckable[];
   /** Sessions that started where no CLAUDE.md/AGENTS.md could be found. */
   sessionsWithoutRules: SessionInfo[];
+  /**
+   * Work done in a project whose CLAUDE.md was not loaded: the session started in another
+   * folder and moved there (`cd`, absolute paths). Claude never saw those rules, so this is
+   * reported separately instead of as violations.
+   */
+  unloaded: UnloadedWork[];
 }
+
+export interface UnloadedWork {
+  /** Folder holding the rule file(s) that were not loaded. */
+  dir: string;
+  files: string[];
+  sessions: number;
+  actions: number;
+  examples: Hit[];
+}
+
+// actions worth reporting when they happen outside the loaded rules (not plain reads)
+const CHANGING_CMD =
+  /^(?:git\s+(?:commit|push|merge|rebase|reset|switch|checkout|cherry-pick|revert|tag|stash|clean)\b|(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|publish)\b|gh\s+pr\s+(?:create|merge)\b|rm\s)/;
 
 const RULE_FILES = ["CLAUDE.md", "AGENTS.md", path.join(".claude", "CLAUDE.md")];
 const OTHER_PMS = /^(npm|pnpm|yarn|bun)\s+(install|i|add|ci|remove|uninstall|rm)\b/;
@@ -296,5 +315,65 @@ export function check(events: ToolEvent[], sessions: SessionInfo[], since: numbe
     results: [...results.values()],
     uncheckable,
     sessionsWithoutRules,
+    unloaded: findUnloadedWork(events, (f) => {
+      const r = extractRules(f);
+      return r.rules.length + r.uncheckable.length;
+    }),
   };
+}
+
+function sameRepo(a: string, b: string): boolean {
+  const ra = repoInfo(a);
+  const rb = repoInfo(b);
+  return !!ra && !!rb && norm(ra.main) === norm(rb.main);
+}
+
+/** Directories an event changes things in (file writes, and changing shell commands). */
+function changedDirs(ev: ToolEvent): { dir: string; what: string }[] {
+  const out: { dir: string; what: string }[] = [];
+  if (WRITE_TOOLS.has(ev.tool)) {
+    const f = fileOf(ev);
+    if (f) out.push({ dir: path.dirname(f), what: `${ev.tool} ${f}` });
+  }
+  const cmd = commandOf(ev);
+  if (cmd !== null) {
+    for (const c of commandsWithCwd(cmd, ev.cwd)) {
+      if (CHANGING_CMD.test(c.text)) out.push({ dir: c.cwd, what: unquote(c.text) });
+    }
+  }
+  return out;
+}
+
+export function findUnloadedWork(events: ToolEvent[], ruleCount: (file: string) => number): UnloadedWork[] {
+  const byDir = new Map<string, { dir: string; files: string[]; sessions: Set<string>; actions: number; examples: Hit[] }>();
+  const loadedCache = new Map<string, string[]>();
+  for (const ev of events) {
+    const changes = changedDirs(ev);
+    if (!changes.length) continue;
+    let loaded = loadedCache.get(ev.cwd);
+    if (!loaded) {
+      loaded = projectRuleFilesFor(ev.cwd).map((f) => path.dirname(f));
+      loadedCache.set(ev.cwd, loaded);
+    }
+    for (const { dir, what } of changes) {
+      // Claude Code loads CLAUDE.md from the start folder upwards, and from its subfolders on demand
+      if (isUnder(dir, ev.cwd)) continue;
+      // another worktree of the same repository carries the same CLAUDE.md
+      if (sameRepo(dir, ev.cwd)) continue;
+      const files = projectRuleFilesFor(dir).filter((f) => {
+        const d = path.dirname(f);
+        return !loaded!.some((l) => isUnder(l, d) || isUnder(d, l)) && !isUnder(ev.cwd, d) && ruleCount(f) > 0;
+      });
+      if (!files.length) continue;
+      const key = path.dirname(files[0]);
+      const cur = byDir.get(key) ?? { dir: key, files, sessions: new Set<string>(), actions: 0, examples: [] };
+      cur.sessions.add(ev.sessionId);
+      cur.actions += 1;
+      if (cur.examples.length < 3) cur.examples.push({ ts: ev.ts, sessionId: ev.sessionId, what });
+      byDir.set(key, cur);
+    }
+  }
+  return [...byDir.values()]
+    .map((u) => ({ dir: u.dir, files: u.files, sessions: u.sessions.size, actions: u.actions, examples: u.examples }))
+    .sort((a, b) => b.actions - a.actions);
 }

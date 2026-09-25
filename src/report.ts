@@ -84,6 +84,23 @@ export function renderReport(res: CheckResult, days: number, hookInstalled = fal
     out.push("");
   }
 
+  if (res.unloaded.length) {
+    out.push(`  ${DIV}`);
+    out.push("  Rules that were never loaded");
+    out.push(`  ${DIV}`);
+    out.push("  These projects were changed from sessions that started in another folder,");
+    out.push("  so their CLAUDE.md was not in Claude's context (not counted as violations):");
+    for (const u of res.unloaded.slice(0, 5)) {
+      out.push("");
+      out.push(`  ! ${u.dir}`);
+      out.push(`    ${u.actions} change(s) in ${u.sessions} session(s) · rules in ${u.files.map((f) => path.basename(f)).join(", ")}`);
+      for (const e of u.examples.slice(0, 2)) out.push(`      ${stamp(e.ts)}  ${short(e.what, 100)}`);
+    }
+    out.push("");
+    out.push("  To have these rules applied, start Claude Code in that project's folder.");
+    out.push("");
+  }
+
   if (res.sessionsWithoutRules.length) {
     out.push(`  ${res.sessionsWithoutRules.length} session(s) started where no CLAUDE.md / AGENTS.md was found,`);
     out.push("  so no project rules were loaded. For example:");

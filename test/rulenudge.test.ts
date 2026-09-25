@@ -410,6 +410,24 @@ describe("checking sessions", () => {
     expect(run().results.some((r) => r.rule.kind === "worktree-only" && r.verdict === "violated")).toBe(true);
   });
 
+  it("reports changes made where the project rules were not loaded, but not other worktrees", () => {
+    commitClaudeMd("- Never run `git push --force`.\n", Date.now() - 3 * DAY);
+    const start = path.join(home, "elsewhere");
+    mkdirSync(start);
+    const wt = path.join(home, "repo-wt3");
+    git(["worktree", "add", "-q", "-b", "f3", wt], repo);
+    session("s1", start, [
+      { tool: "Write", file: path.join(repo, "a.ts"), at: Date.now() - DAY },
+      { bash: `cd "${repo}" && git commit -m x`, at: Date.now() - DAY + 100 },
+      { tool: "Read", file: path.join(repo, "b.ts"), at: Date.now() - DAY + 200 },
+    ]);
+    session("s2", repo, [{ tool: "Write", file: path.join(wt, "c.ts"), at: Date.now() - DAY }]);
+    const u = run().unloaded;
+    expect(u).toHaveLength(1);
+    expect(u[0].actions).toBe(2); // the write and the commit; reads are not counted
+    expect(u[0].sessions).toBe(1);
+  });
+
   it("reports sessions that started where no rule file exists", () => {
     const elsewhere = path.join(home, "scratch");
     mkdirSync(elsewhere);

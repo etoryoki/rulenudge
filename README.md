@@ -108,7 +108,7 @@ Exit code is `1` when a rule was broken (useful in scripts), `0` otherwise.
 - Rules that need judgement ("reply in Japanese", "keep functions small") are not checked.
 - "Unclear" means one of your last three messages mentioned that action (e.g. "merge", "push", the file name) in a sentence that was not a prohibition. A loosely related message can therefore turn a real violation into "unclear" — the evidence is always shown so you can judge.
 - Commands inside quoted strings (`bash -c "git push --force"`, `"$(…)"`) are not inspected.
-- Rules are taken from the CLAUDE.md files of the directory a session **started** in. If a session started in project A and then works in project B (`cd`), B's rules are not applied to it yet.
+- Claude Code loads CLAUDE.md from the folder a session **started** in. When a session started in project A changes files or runs commits in project B, B's CLAUDE.md was never in Claude's context — rulenudge lists this under "Rules that were never loaded" instead of counting violations. (Other worktrees of the same repository carry the same CLAUDE.md and are treated as loaded.)
 - "Test before commit" checks that tests ran, not that they passed. A test run elsewhere (another session, CI) is not seen.
 - Package-manager rules are recognised in the form "Use pnpm" / "pnpm only". A sentence like "Don't use npm, use pnpm" is read as a prohibition and not checked.
 - It reads Claude Code's local logs (`~/.claude/projects`). The log format is not a public API and may change.

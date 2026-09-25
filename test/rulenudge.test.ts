@@ -519,7 +519,17 @@ describe("rules command", () => {
     expect(read("- CI では `.env` の直接読み込みを避ける実装になっている。")).toEqual([]);
     // a bracket is a clause: `.md` is the allowed type
     expect(read("- 生成ファイルは `.md` で保存する（`.txt` は不採用）。")).toEqual(["protected-path:*.txt"]);
-    // still read
+    // conditional prohibitions, in English and Japanese alike
+    expect(read("- Never run `terraform apply` when on the main branch.")).toEqual([]);
+    expect(read("- メインブランチでは `terraform apply` を実行しないこと。")).toEqual([]);
+    expect(read("- 本番反映の際は `terraform apply` を手動実行しないこと。")).toEqual([]);
+    expect(read("- 権限がなければ `terraform apply` を実行しないこと。")).toEqual([]);
+    // still read: "even if" stresses the rule; a reason after 、 does not soften it
+    expect(read("- Never commit `.env` files, even if they seem harmless.")).toEqual(["no-env:"]);
+    expect(read("- Never run `git push --force` even when the branch is yours only.")).toEqual(["forbidden-cmd:git push --force"]);
+    expect(read("- `rm -rf` は実行しないこと、影響範囲が大きいため慎重に扱われている。")).toEqual(["forbidden-cmd:rm -rf"]);
+    expect(read("- `dist/` は手で編集しないこと、ビルド結果は毎回上書きされる。")).toEqual(["protected-path:dist/"]);
+    expect(read("- `.env` を読んではいけない")).toEqual(["no-env:"]);
     expect(read("- `.env` は読まない")).toEqual(["no-env:"]);
     expect(read("- Never run `git push --force` or `git reset --hard`.")).toEqual([
       "forbidden-cmd:git push --force",

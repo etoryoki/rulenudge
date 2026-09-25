@@ -45,7 +45,9 @@ const NEG_JA =
   /禁止|厳禁|不可|不採用|避ける|避けて|しない(?:こと|で)?|使わない|触らない|触れない|読まない|書かない|作らない|置かない|残さない|送らない|押さない|含めない|入れない|書き換えない|変えない|いじらない|消さない|行わない|やらない|走らせない|[てで]は(?:いけない|いけません|ならない|なりません|だめ|ダメ|駄目)|べきではない|べきでない/;
 export const NEGATION = new RegExp(`${NEG_EN.source}|${NEG_JA.source}`, "i");
 // "only when …", "〜する場合は", "〜ないと": a condition, not a plain prohibition
-const CONDITIONAL = /\b(?:only when|only if|if|unless|when|while|in case)\b|場合|とき|時は|なら[、,\s]|ならば|限り|ないと/i;
+// ("even if" stresses the rule; 「〜ではいけない」 is a prohibition, not 「〜では」)
+const CONDITIONAL =
+  /\b(?:only when|only if|unless|in case)\b|(?<!\beven\s)\b(?:if|when|while)\b|場合|とき|時は|際|次第|限り|ないと|なければ|たら|なら[、,\s]|ならば|では(?!(?:いけ|なら|なり|だめ|ダメ|駄目|ない))/i;
 // "consider avoiding", "〜を避けることを検討", "なるべく"
 const HEDGE = /\b(?:consider|ideally|try to|if possible)\b|検討|なるべく|できれば|できるだけ|推奨/i;
 // "〜しない設定になっている", "〜でマスクしている": describes the system, not a rule for Claude
@@ -110,8 +112,8 @@ function clauseOf(text: string, token: string): string {
 }
 
 /** A conditional, hedged or descriptive statement: not a rule rulenudge can hold Claude to. */
-function softened(clause: string, sentence: string): boolean {
-  return CONDITIONAL.test(clause) || HEDGE.test(clause) || DESCRIPTION.test(sentence.trim());
+function softened(clause: string): boolean {
+  return CONDITIONAL.test(clause) || HEDGE.test(clause) || DESCRIPTION.test(clause.trim());
 }
 
 /**
@@ -128,7 +130,7 @@ function commandNegated(line: string, idx: number, len: number): boolean {
   const n = after.match(NEG_JA);
   if (!n || (n.index ?? 0) > 12 || /[`、。,;；]/.test(after.slice(0, n.index))) return false;
   const rest = after.slice((n.index ?? 0) + n[0].length);
-  return /^(?:こと|です|ください|で(?:ください)?|ように)?\s*(?:[。．.!！（(]|$)/.test(rest);
+  return /^(?:こと|です|ください|で(?:ください)?|ように)?\s*(?:[。．.!！（(、,;；]|$)/.test(rest);
 }
 
 function negationIndex(line: string): number {
@@ -212,7 +214,7 @@ export function extractRulesFromText(
         for (const m of line.matchAll(/`([^`]+)`/g)) {
           const cmd = m[1].trim();
           if (!commandNegated(line, m.index ?? 0, m[0].length)) continue;
-          if (softened(clauseOf(base.text, m[0]), sentenceWith(base.text, m[0]))) continue;
+          if (softened(clauseOf(base.text, m[0]))) continue;
           if (amendRule && /--amend\b/.test(cmd)) continue;
           if (!CLI.test(cmd)) continue;
           if (/[<>{}]|\.\.\./.test(cmd)) continue; // placeholders like <pkg>
@@ -228,7 +230,7 @@ export function extractRulesFromText(
             // "never commit `.log` output" bans committing, not the file type
             if (
               NEGATION.test(clause) &&
-              !softened(clause, sentenceWith(base.text, m[0])) &&
+              !softened(clause) &&
               (FILE_VERB.test(clause) || (/不採用|禁止|厳禁|不可|使わない/.test(clause) && FILE_VERB.test(line)))
             ) {
               rules.push({ kind: "protected-path", value: `*${p}`, ...base, text: sentenceWith(base.text, "`" + m[1] + "`") });
@@ -241,7 +243,7 @@ export function extractRulesFromText(
           // "You may hand-edit `dist/`, but never commit it" does not forbid editing
           // (the clause that holds this path — "never edit `dist/`, but you may regenerate `build/`")
           const clause = clauseOf(base.text, m[0]);
-          if (!NEGATION.test(clause) || !EDIT_VERB.test(clause) || softened(clause, sentence)) continue;
+          if (!NEGATION.test(clause) || !EDIT_VERB.test(clause) || softened(clause)) continue;
           rules.push({ kind: "protected-path", value: p.replace(/^\.\//, ""), ...base, text: sentence });
         }
       }
@@ -252,7 +254,7 @@ export function extractRulesFromText(
       // 3) secrets
       const envSentence = sentenceWith(base.text, /\.env/);
       // "`.env` の値はマスクしている" describes the code; it is not a rule for Claude
-      if (/(^|[\s`'"(])\.env\b/.test(line) && NEGATION.test(envSentence) && !softened(envSentence, envSentence)) {
+      if (/(^|[\s`'"(])\.env\b/.test(line) && NEGATION.test(envSentence) && !softened(clauseOf(base.text, ".env"))) {
         rules.push({ kind: "no-env", ...base, text: sentenceWith(base.text, /\.env/) });
       }
     }

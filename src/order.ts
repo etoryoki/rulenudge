@@ -250,7 +250,8 @@ export class RunBeforeTracker implements OrderTracker {
         if (byHook) this.clear(k, byHook);
         if (!this.dirty.get(k)?.size) continue;
       }
-      const left = [...this.dirty.get(k)!].map((d) => (d === ROOT_LEVEL ? "." : path.relative(root, d).replace(/\\/g, "/") || "."));
+      // (the folders are normalized: lower case, real path — compare with the normalized root)
+      const left = [...this.dirty.get(k)!].map((d) => (d === ROOT_LEVEL ? "." : path.posix.relative(norm(root), d) || "."));
       this.dirty.delete(k);
       const where = left.length && !(left.length === 1 && left[0] === ".") ? ` in ${left.join(", ")}` : "";
       return {

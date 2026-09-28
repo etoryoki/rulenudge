@@ -14,7 +14,7 @@ import { commandsWithCwd, normalizeMsysPath, startsWithCommand, unquote } from "
 
 const TEST_CMD =
   /^(?:(?:npm|pnpm|yarn|bun)\s+(?:(?:-r|--recursive|-w|--workspace(?:=\S+|\s+\S+)?|--filter(?:=\S+|\s+\S+)|-F\s+\S+)\s+)*(?:run\s+)?test\b|(?:npx|pnpx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+exec)\s+(?:vitest|jest|mocha|ava|playwright\s+test)\b|(?:npm|pnpm|yarn)\s+(?:(?:-r|--filter(?:=\S+|\s+\S+)|-F\s+\S+)\s+)*exec\s+(?:vitest|jest)\b|vitest\b|jest\b|mocha\b|pytest\b|python3?\s+-m\s+(?:pytest|unittest)\b|go\s+test\b|cargo\s+(?:test|nextest)\b|make\s+(?:test|check)\b|deno\s+test\b|mvn\s+(?:test|verify)\b|(?:\.\/)?gradlew?\s+test\b|(?:bundle\s+exec\s+)?rspec\b|phpunit\b|dotnet\s+test\b)/i;
-const COMMIT = /^git\s+commit\b/;
+const COMMIT = /^git\s+commit(?![\w-])/;
 // docs, prose and images are not "code changes" that need a test run
 const NOT_CODE = /\.(md|mdx|markdown|txt|rst|adoc|png|jpe?g|gif|svg|webp|ico|pdf)$|[\\/]docs?[\\/]/i;
 const SKIP_TESTS = /\b(skip|without|no need|don['’]t need|not needed|later)\b|不要|いらない|いい(?:の|から|です|よ)|後で|なしで|省略|飛ばして/i;
@@ -111,7 +111,7 @@ function fileOf(ev: ToolEvent): string | null {
   return typeof p === "string" ? normalizeMsysPath(p) : null;
 }
 
-const HEAD_MOVE = /^git\s+(?:checkout|switch|cherry-pick|merge|rebase|revert|pull|am|reset)\b/;
+const HEAD_MOVE = /^git\s+(?:checkout|switch|cherry-pick|merge|rebase|revert|pull|am|reset)(?![\w-])/;
 
 export interface OrderTracker {
   step(ev: ToolEvent): OrderHit | null;
@@ -133,7 +133,7 @@ export class AmendAfterPushTracker implements OrderTracker {
       const root = worktreeRoot(c.cwd);
       if (!root || (this.scope && !isUnder(root, this.scope) && !isUnder(this.scope, root))) continue;
       const k = norm(root);
-      if (/^git\s+push\b/.test(c.text)) {
+      if (/^git\s+push(?![\w-])/.test(c.text)) {
         // a failed push (non-zero exit) pushed nothing
         if (ev.isError !== true) this.pushed.set(k, true);
         continue;
@@ -239,7 +239,7 @@ export class RunBeforeTracker implements OrderTracker {
       }
       const isTrigger =
         trigger === "push"
-          ? /^git\s+push\b/.test(c.text) && !/\s(?:-n|--dry-run)\b/.test(c.text)
+          ? /^git\s+push(?![\w-])/.test(c.text) &&!/\s(?:-n|--dry-run)\b/.test(c.text)
           : COMMIT.test(c.text) && !/--amend\b/.test(c.text);
       if (!isTrigger) continue;
       if (!this.dirty.get(k)?.size) continue;

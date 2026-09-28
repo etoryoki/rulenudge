@@ -188,6 +188,7 @@ describe("test before commit", () => {
       { bash: "git commit -m unrelated", at: t + 300 },
       { tool: "Edit", file: path.join(repo, "src.ts"), at: t + 400 },
       { bash: "git commit --amend --no-edit", at: t + 500 },
+      { bash: "git commit-tree HEAD^{tree} -m plumbing", at: t + 600 },
     ]);
     expect(verdictOf("test-before-commit")?.verdict).toBe("followed");
   });
@@ -911,6 +912,19 @@ describe("checking sessions", () => {
     ]);
     expect(verdictOf("worktree-only")?.verdict).toBe("followed");
     session("s2", repo, [{ tool: "Write", file: path.join(repo, "src.ts"), at: Date.now() - DAY }]);
+    expect(run().results.some((r) => r.rule.kind === "worktree-only" && r.verdict === "violated")).toBe(true);
+  });
+
+  it("does not count read-only git commands that share a prefix as changes in the main checkout", () => {
+    commitClaudeMd("- Always work in a git worktree, never in the main checkout.\n", Date.now() - 3 * DAY);
+    session("s1", repo, [
+      { bash: "git merge-base --is-ancestor HEAD origin/main", at: Date.now() - DAY },
+      { bash: "git checkout-index --help", at: Date.now() - DAY },
+      { bash: "git stash list", at: Date.now() - DAY },
+      { bash: "git stash show -p", at: Date.now() - DAY },
+    ]);
+    expect(verdictOf("worktree-only")?.verdict).toBe("followed");
+    session("s2", repo, [{ bash: "git merge origin/main", at: Date.now() - DAY }]);
     expect(run().results.some((r) => r.rule.kind === "worktree-only" && r.verdict === "violated")).toBe(true);
   });
 

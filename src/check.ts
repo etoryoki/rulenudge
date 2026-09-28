@@ -57,7 +57,7 @@ export interface UnloadedWork {
 
 // actions worth reporting when they happen outside the loaded rules (not plain reads)
 const CHANGING_CMD =
-  /^(?:git\s+(?:commit|push|merge|rebase|reset|switch|checkout|cherry-pick|revert|tag|stash|clean|restore|apply|am)\b|(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|publish)\b|gh\s+pr\s+(?:create|merge)\b|rm\s)/;
+  /^(?:git\s+(?:commit|push|merge|rebase|reset|switch|checkout|cherry-pick|revert|tag|stash|clean|restore|apply|am)(?![\w-])|(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|publish)\b|gh\s+pr\s+(?:create|merge)\b|rm\s)/;
 
 const RULE_FILES = ["CLAUDE.md", "AGENTS.md", path.join(".claude", "CLAUDE.md")];
 const OTHER_PMS = /^(npm|pnpm|yarn|bun)\s+(install|i|add|ci|remove|uninstall|rm)\b/;
@@ -65,7 +65,8 @@ const READERS = /^(cat|less|more|head|tail|type|source|\.|bat|grep|rg|sed|awk|ge
 const SHELL_TOOLS = new Set(["Bash", "PowerShell"]);
 const CONVENTIONAL = /^(?:feat|fix|docs|style|refactor|perf|test|tests|build|ci|chore|revert|deps)(?:\([^)]+\))?!?:\s+\S/;
 const ENV_FILE = /(^|[\s/\\])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w.-]+)?(?=$|\s)/;
-const MUTATING_GIT = /^git\s+(switch|checkout|reset|commit|merge|rebase|stash|restore|clean|cherry-pick|revert|am|apply)\b/;
+// `(?![\w-])`, not `\b`: `git merge-base`, `git commit-tree`, `git checkout-index` are other commands
+const MUTATING_GIT = /^git\s+(?:switch|checkout|reset|commit|merge|rebase|stash(?!\s+(?:list|show)\b)|restore|clean|cherry-pick|revert|am|apply)(?![\w-])/;
 const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const FILE_TOOLS = new Set(["Read", "Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
@@ -174,7 +175,7 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
     const cmds = all.filter((c) => !root || isUnder(c.cwd, root));
     const show = (c: { text: string }) => unquote(c.text);
     if (rule.kind === "commit-format") {
-      if (!cmds.some((c) => /^git\s+commit\b/.test(c.text))) return null;
+      if (!cmds.some((c) => /^git\s+commit(?![\w-])/.test(c.text))) return null;
       for (const subject of commitSubjects(cmd)) {
         if (/^(?:Merge|Revert|fixup!|squash!)/.test(subject)) continue;
         const bad =

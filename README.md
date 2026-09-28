@@ -48,7 +48,7 @@ npm i -g rulenudge
 rulenudge install-hook
 ```
 
-This adds a `SessionStart` hook to `~/.claude/settings.json` (a backup is written first). When a new session starts in a project, rulenudge checks the earlier sessions there and, if a rule was broken, tells Claude:
+This adds a `SessionStart` hook to `~/.claude/settings.json` (if the file exists, a backup is written first). When a new session starts in a project, rulenudge checks the earlier sessions there and, if a rule was broken, tells Claude:
 
 ```
 [rulenudge] In earlier sessions in this project, these CLAUDE.md rules were broken:
@@ -120,7 +120,7 @@ A checker that cries wolf twice stops being read, so false positives are treated
 | Conditional prohibitions | "never … on main" read as "never …" | correct runs elsewhere reported | conditional sentences are "not checkable" |
 | Japanese rules | 「メインのチェックアウト**では**」 read as a condition | the rule silently did nothing | judged per clause and bracket |
 | Type check before push | 180 days, 215 pushes | 0 → 2 → 4 as the scope was widened (worktrees, per-package edits) | 1 real violation (a test file edited after the check, pushed with hooks skipped) |
-| Main-checkout rule | a real user's 7 days | `git merge-base` counted as `git merge` | 0 (fixed in 0.7.2, with `git commit-tree` and `git checkout-index`) |
+| Main-checkout rule | 7 days in another project of the author's | `git merge-base` counted as `git merge` | 0 (fixed in 0.7.2, with `git commit-tree` and `git checkout-index`) |
 
 After these fixes, one real violation was left in the author's own logs. If rulenudge reports something a person looking at the same evidence would not call a violation, please [open an issue](https://github.com/etoryoki/rulenudge/issues).
 
@@ -158,7 +158,7 @@ CLAUDE.md（と AGENTS.md）のルールが、実際のセッションで守ら�
 ```sh
 npx rulenudge                 # 直近 7 日の点検
 npm i -g rulenudge
-rulenudge install-hook        # 次のセッションの開始時に知らせる（~/.claude/settings.json に追加。先にバックアップを作ります）
+rulenudge install-hook        # 次のセッションの開始時に知らせる（~/.claude/settings.json に追加。ファイルが既にあれば先にバックアップを作ります）
 rulenudge rules               # どのルールが点検でき、どれができないか。点検できる書き方のヒントつき
 ```
 

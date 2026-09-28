@@ -4,6 +4,15 @@
 
 Linters read your CLAUDE.md. rulenudge reads your Claude Code session logs and tells you which rules were broken, when, and by which command. Then it can remind Claude at the start of the next session.
 
+**It does not stop anything. It tells you, and it tells Claude next time.** It is for one person using Claude Code who wants the same mistake not to happen twice:
+
+- No model and no API key: a rule is judged only when the session log proves it, otherwise it is left as "not checkable"
+- No dependencies, nothing leaves your machine
+- Rules written in English or Japanese
+- Checks the order of things, not just single commands ("run the tests before committing", "no amend after a push")
+
+日本語の説明は [下にあります](#日本語)。
+
 ```sh
 npx rulenudge
 ```
@@ -100,6 +109,21 @@ How it avoids false positives:
 
 It also lists sessions that started where no CLAUDE.md / AGENTS.md exists, so no project rules were loaded at all.
 
+## Measured false positives
+
+A checker that cries wolf twice stops being read, so false positives are treated as the main bug. These are real runs on the author's own session logs, and what changed:
+
+| Check | Run | First result | After the fix |
+|---|---|---|---|
+| Rules added later | 14 days, ~3,550 tool calls | 37 violations, all from before the rule was written | 0 (each rule line is dated with `git blame`) |
+| Test before commit | 14 days, 151 commits | 11 violations, all command forms it could not read (`git -c … commit`, `timeout 600 npx vitest run`, …) | 0 |
+| Conditional prohibitions | "never … on main" read as "never …" | correct runs elsewhere reported | conditional sentences are "not checkable" |
+| Japanese rules | 「メインのチェックアウト**では**」 read as a condition | the rule silently did nothing | judged per clause and bracket |
+| Type check before push | 180 days, 215 pushes | 0 → 2 → 4 as the scope was widened (worktrees, per-package edits) | 1 real violation (a test file edited after the check, pushed with hooks skipped) |
+| Main-checkout rule | a real user's 7 days | `git merge-base` counted as `git merge` | 0 (fixed in 0.7.2, with `git commit-tree` and `git checkout-index`) |
+
+After these fixes, one real violation was left in the author's own logs. If rulenudge reports something a person looking at the same evidence would not call a violation, please [open an issue](https://github.com/etoryoki/rulenudge/issues).
+
 ## Options
 
 ```
@@ -121,6 +145,35 @@ Exit code is `1` when a rule was broken (useful in scripts), `0` otherwise.
 - Package-manager rules are recognised in the form "Use pnpm" / "pnpm only". A sentence like "Don't use npm, use pnpm" is read as a prohibition and not checked.
 - It reads Claude Code's local logs (`~/.claude/projects`). The log format is not a public API and may change.
 - Node.js 20 or later.
+
+## 日本語
+
+CLAUDE.md（と AGENTS.md）のルールが、実際のセッションで守られたかを、Claude Code のセッション記録から点検します。破られたルールは、次のセッションの開始時に Claude 本人に知らせます。
+
+- **止めません。知らせます。** Claude Code を 1 人で使う人が、同じ失敗を次の回に繰り返させないための道具です
+- モデルも API キーも使いません。記録から確実に言えるものだけを判定し、判断が要るルールは「点検できない」として数だけ出します
+- 依存パッケージなし。記録は手元で読むだけで、どこにも送りません
+- 日本語のルールも読めます（「〜しない」「〜してはいけない」「〜は禁止」「〜は不採用」など）
+
+```sh
+npx rulenudge                 # 直近 7 日の点検
+npm i -g rulenudge
+rulenudge install-hook        # 次のセッションの開始時に知らせる（~/.claude/settings.json に追加。先にバックアップを作ります）
+rulenudge rules               # どのルールが点検でき、どれができないか。点検できる書き方のヒントつき
+```
+
+点検できるルールの例:
+
+| CLAUDE.md の書き方 | 違反になるのは |
+|---|---|
+| ``- `git push --force` を実行しない`` | そのコマンドを実行したとき |
+| ``- 生成ファイルは `.md` で保存（`.txt` は不採用）`` | `.txt` のファイルを書いたとき |
+| ``- `dist/` を手で書き換えない`` | そのフォルダのファイルを編集したとき |
+| `- push 済みのコミットを amend しない` | push の後に、新しいコミットを挟まずに `git commit --amend` したとき |
+| ``- push 前に `tsc --noEmit` `` | コードを編集してから、それを実行せずに push したとき |
+| `- コミットメッセージは英語で書く` | 日本語を含むメッセージでコミットしたとき |
+
+「main では〜しない」のように条件がついた文は、推測で判定せず「点検できない」に回します。誤検知を見つけたら [Issue](https://github.com/etoryoki/rulenudge/issues) で教えてください。
 
 ## License
 

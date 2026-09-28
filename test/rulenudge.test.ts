@@ -759,11 +759,27 @@ describe("rules command", () => {
 
   it("gives a rewrite hint for commands written without backticks", async () => {
     const { hintFor } = await import("../src/rulesCmd.js");
-    expect(hintFor({ text: "Never git push --force to main", file: "x", line: 1 })).toContain("`git push --force to main`");
+    expect(hintFor({ text: "Never git push --force", file: "x", line: 1 })).toContain("`git push --force`");
     expect(hintFor({ text: "Always keep the tests green for every commit you make", file: "x", line: 1 })).toContain(
       "Run the tests before committing",
     );
     expect(hintFor({ text: "Keep functions small", file: "x", line: 1 })).toContain("judgement");
+  });
+
+  it("says why a scoped or conditional rule is left unchecked, instead of suggesting a rewrite", async () => {
+    const { hintFor } = await import("../src/rulesCmd.js");
+    // backticks would not make these checkable, so do not suggest them
+    expect(hintFor({ text: "Never git push --force to main", file: "x", line: 1 })).toContain("branch or an environment");
+    expect(hintFor({ text: "main では `git push --force` しない", file: "x", line: 1 })).toContain("branch or an environment");
+    expect(hintFor({ text: "Don't run `terraform apply` unless the plan was reviewed", file: "x", line: 1 })).toContain("condition");
+    expect(hintFor({ text: "できれば `npm` ではなく `pnpm` を使う", file: "x", line: 1 })).toContain("recommendation");
+    // "in the main checkout" is checkable, so it is not reported as a scope
+    expect(hintFor({ text: "Never `git reset --hard` something odd in the main checkout", file: "x", line: 1 })).not.toContain("branch or an environment");
+    // prose rules without a command stay "needs judgement": the condition words misfire there
+    expect(hintFor({ text: "主体的: 指示を待つのではなく、自ら課題を発見し提案する。", file: "x", line: 1 })).toContain("judgement");
+    expect(hintFor({ text: "起案前は、競合調査を必ず実行する。共存シナリオを並列検討する", file: "x", line: 1 })).toContain("judgement");
+    // a file path in backticks is not a command
+    expect(hintFor({ text: "起案前は `docs/playbooks/competitive-analysis.md` を必ず実行する。並列検討する", file: "x", line: 1 })).toContain("judgement");
   });
 
   it("prints checked and not-checked rules for a directory", async () => {

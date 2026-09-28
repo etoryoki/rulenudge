@@ -4,7 +4,7 @@
 import path from "node:path";
 
 import { ruleFilesFor } from "./check.js";
-import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
+import { extractRules, limitationOf, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 
 const DIV = "─".repeat(56);
 
@@ -50,6 +50,20 @@ const COMMAND_WORD =
 /** Why a rule is not checkable, and how it could be (if at all). */
 export function hintFor(u: Uncheckable): string {
   const t = u.text;
+  // A rule naming a command that is left unchecked on purpose: say why, instead of suggesting
+  // a rewrite that would not help. Only for rules naming a command — on prose rules the
+  // condition words misfire (「〜のではなく」, 「検討」) and "needs judgement" is the true reason.
+  // a program with arguments, or a bare known command, in backticks (not a path like `docs/x.md`)
+  const namesCommand =
+    /`(?:[a-z][a-z0-9-]*\s+[^`]+|git|gh|npm|npx|pnpm|yarn|bun|docker|rm|kubectl|terraform)`/.test(t) || COMMAND_WORD.test(t);
+  switch (namesCommand ? limitationOf(t) : null) {
+    case "scope":
+      return "limited to a branch or an environment — the session log does not say where a command ran, so it is not judged";
+    case "conditional":
+      return "depends on a condition — not judged, to avoid guessing when it applies";
+    case "hedge":
+      return "a recommendation, not a rule — not judged";
+  }
   if (/test|テスト/i.test(t) && /commit|コミット/i.test(t)) {
     return "say when the tests must run to make it checkable, e.g.  - Run the tests before committing";
   }

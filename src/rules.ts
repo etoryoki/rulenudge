@@ -78,6 +78,14 @@ const SCOPE = new RegExp(
 );
 // "consider avoiding", "〜を避けることを検討", "なるべく"
 const HEDGE = /\b(?:consider|ideally|try to|if possible)\b|検討|なるべく|できれば|できるだけ|推奨/i;
+/** Why a sentence is left unchecked on purpose (a branch or environment, a condition, a hedge), or null. */
+export function limitationOf(text: string): "scope" | "conditional" | "hedge" | null {
+  const t = text.replace(MAIN_CHECKOUT_PHRASE, ""); // "in the main checkout" is checkable
+  if (SCOPE.test(t)) return "scope";
+  if (HEDGE.test(t)) return "hedge"; // before conditions: 「できれば A ではなく B」 is a wish, not a condition
+  if (CONDITIONAL.test(t)) return "conditional";
+  return null;
+}
 // "〜しない設定になっている", "〜でマスクしている": describes the system, not a rule for Claude
 const DESCRIPTION = /(?:ている|ていた|てある|てあります|ています|なっている|なっています|される|された|されている)[。．.]?$/;
 const NOT_A_RULE = /\b(forget|worry|hesitate)\b|忘れ/i;

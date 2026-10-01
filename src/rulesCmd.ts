@@ -4,7 +4,7 @@
 import path from "node:path";
 
 import { ruleFilesFor } from "./check.js";
-import { extractRules, limitationOf, NEGATION, type Rule, type Uncheckable } from "./rules.js";
+import { extractRules, isForcePushRule, limitationOf, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 
 const DIV = "─".repeat(56);
 
@@ -22,9 +22,12 @@ function short(s: string, n: number): string {
 export function describeRule(r: Rule): string {
   switch (r.kind) {
     case "forbidden-cmd":
+      if (isForcePushRule(r.value ?? "")) return `never force-pushes${r.allowLease ? " (--force-with-lease is allowed)" : ""}`;
       return `never runs \`${r.value}\`${r.where === "main-checkout" ? " in the main checkout" : ""}`;
     case "no-env":
-      return "never reads .env files";
+      return r.value === "commit" ? "never commits .env files" : "never reads .env files";
+    case "no-direct-branch":
+      return `never ${r.trigger === "commit" ? "commits" : "pushes"} directly to ${r.value}`;
     case "package-manager":
       return `uses ${r.value} (not other package managers)`;
     case "worktree-only":

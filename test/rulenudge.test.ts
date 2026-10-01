@@ -37,12 +37,19 @@ function session(
   id: string,
   cwd: string,
   steps: ({ user: string; at: number } | { bash: string; at: number } | { tool: string; file: string; at: number })[],
-  opts: { sidechain?: boolean } = {},
+  opts: { sidechain?: boolean; branch?: string } = {},
 ): void {
   const dir = path.join(projects, encodeProjectDir(cwd));
   mkdirSync(dir, { recursive: true });
   const lines = steps.map((s) => {
-    const base = { sessionId: id, cwd, timestamp: new Date(s.at).toISOString(), isSidechain: !!opts.sidechain };
+    const base = {
+      sessionId: id,
+      cwd,
+      timestamp: new Date(s.at).toISOString(),
+      isSidechain: !!opts.sidechain,
+      // Claude Code's gitBranch, which lags behind in worktrees: rulenudge must not rely on it
+      ...(opts.branch ? { gitBranch: opts.branch } : {}),
+    };
     if ("user" in s) return JSON.stringify({ ...base, type: "user", message: { role: "user", content: s.user } });
     const input = "bash" in s ? { command: s.bash } : { file_path: s.file };
     const name = "bash" in s ? "Bash" : s.tool;
@@ -655,6 +662,143 @@ describe("protected paths", () => {
   });
 });
 
+describe("common git and tooling rules written in words (0.8.1)", () => {
+  const read = (text: string) =>
+    extractRulesFromText(text, "CLAUDE.md", null, 0).rules.map(
+      (r) => `${r.kind}:${r.value ?? ""}${r.trigger ? `:${r.trigger}` : ""}${r.allowLease ? ":lease-ok" : ""}`,
+    );
+  const unchecked = (text: string) => extractRulesFromText(text, "CLAUDE.md", null, 0).uncheckable.map((u) => u.text);
+
+  it("reads direct pushes to main, in English and Japanese", () => {
+    expect(read("- Never push directly to `main`. Every change goes through a pull request.")).toEqual(["no-direct-branch:main:push"]);
+    expect(read("- Never push directly to main — use feature branches and PRs")).toEqual(["no-direct-branch:main:push"]);
+    expect(read("- Don't push to main or master (branch protection enforced).")).toEqual([
+      "no-direct-branch:main:push",
+      "no-direct-branch:master:push",
+    ]);
+    expect(read("- main ブランチに直接 push しない")).toEqual(["no-direct-branch:main:push"]);
+  });
+
+  it("leaves 'never commit to main' unchecked: the branch of a commit is not in the session log", () => {
+    expect(read("- Don't commit directly to main.")).toEqual([]);
+    expect(unchecked("- Don't commit directly to main.")).toEqual(["Don't commit directly to main."]);
+    expect(read("- main へ直接コミット禁止")).toEqual([]);
+    expect(read("- Disallowed macro: std::dbg - Use during development but don't commit to main branch")).toEqual([]);
+  });
+
+  it("does not read exceptions, narrower cases or the opposite as a push ban (CTO review)", () => {
+    for (const line of [
+      "- Never push to main unless the release manager approves.",
+      "- Never push directly to main, unless it's a docs change.",
+      "- Don't push to main, except for hotfixes.",
+      "- Never push directly to main, if the PR is not approved.",
+      "- Do not push to main on release days.",
+      "- Do not push to main during the freeze.",
+      "- Never push to main from a worktree.",
+      "- Never push to main from CI.",
+      "- Never push to main in the shared repo.",
+      "- Never push to main for experiments.",
+      "- Never push directly to main for significant changes (use a branch + PR)",
+      "- Never push to main (except release tags).",
+      "- Never merge or push to main without asking first.",
+      "- Never push a tag without first pushing the matching commit to main.",
+      "- Try not to push directly to main if possible.",
+      "- Push to main after review; never push to a release branch.",
+      '- Release notes do not need a PR — push directly to 1.x (an exception to the "never push to main" rule).',
+      "- main に直接 push しない（hotfix は除く）",
+      "- Never force-push to main.",
+      "2. **NEVER force push** to main/master branches.",
+      "- Never force push to shared branches.",
+    ]) {
+      expect(read(line), line).toEqual([]);
+    }
+    expect(unchecked("- Never force-push to main.")).toEqual(["Never force-push to main."]);
+  });
+
+  it("reads force-push rules, and a line that allows --force-with-lease", () => {
+    expect(read("- Never force-push.")).toEqual(["forbidden-cmd:git push --force"]);
+    expect(read("- Do not push with --force.")).toEqual(["forbidden-cmd:git push --force"]);
+    expect(read("- 強制プッシュ禁止")).toEqual(["forbidden-cmd:git push --force"]);
+    expect(read("- Never force push; use `--force-with-lease` instead.")).toEqual(["forbidden-cmd:git push --force:lease-ok"]);
+    expect(read("- Never force-push. Don't use --force-with-lease either.")).toEqual(["forbidden-cmd:git push --force"]);
+    // written as a command: a lease push is not counted
+    expect(read("- Never run `git push --force`.")).toEqual(["forbidden-cmd:git push --force:lease-ok"]);
+    // not a ban
+    expect(read("- Force-push your own feature branches when needed.")).toEqual([]);
+    expect(read("- If a rebase was needed, force-push is fine.")).toEqual([]);
+  });
+
+  it("reads the package manager per clause", () => {
+    expect(read("- Use pnpm. Do not use npm or yarn.")).toEqual(["package-manager:pnpm"]);
+    expect(read("- Never use npm, use pnpm.")).toEqual(["package-manager:pnpm"]);
+    expect(read("- Use pnpm (never npm).")).toEqual(["package-manager:pnpm"]);
+    expect(read("- Use pnpm v10.10.0 for dependency management")).toEqual(["package-manager:pnpm"]);
+    // still read as in 0.8.0 (CTO review)
+    expect(read("- Use pnpm install, not npm install.")).toEqual(["package-manager:pnpm"]);
+    expect(read("- Always use pnpm install --frozen-lockfile.")).toEqual(["package-manager:pnpm"]);
+    expect(read("- Do not use yarn.")).toEqual([]);
+    expect(read("- できれば pnpm を使う")).toEqual([]);
+    expect(read("- Consider using bun; use pnpm only if bun fails.")).toEqual([]);
+    // running something else, a pinned version or a feature
+    expect(read("- Instead, use pnpm exec or bun, depending on which package manager is active.")).toEqual([]);
+    expect(read("- Tests use bun's built-in test runner (`bun:test`)")).toEqual([]);
+    expect(read("- Pin it via `corepack use pnpm@12.1.0`.")).toEqual([]);
+  });
+
+  it("reads 'never commit .env' as committing, and keeps reading rules", () => {
+    expect(read("- Never commit `.env` files.")).toEqual(["no-env:commit"]);
+    expect(read("- `.env` をコミットしない")).toEqual(["no-env:commit"]);
+    expect(read("- Never commit `.env` files or print secrets.")).toEqual(["no-env:commit", "no-env:"]);
+    expect(read("- Never commit .env files, but do read them when debugging.")).toEqual(["no-env:commit"]);
+    expect(read("- Never read `.env` files.")).toEqual(["no-env:"]);
+  });
+
+  it("lists 'Ask before …' as a rule that is not checked", () => {
+    expect(unchecked("- Ask before adding a new dependency.")).toEqual(["Ask before adding a new dependency."]);
+    expect(unchecked("- Asked questions go to the FAQ section.")).toEqual([]);
+  });
+});
+
+describe("checking the 0.8.1 rules", () => {
+  it("flags any force push, and allows a lease push when the line says so", () => {
+    commitClaudeMd("- Never force-push.\n", Date.now() - 3 * DAY);
+    session("s1", repo, [{ bash: "git push origin feat && git push --force-with-lease=x", at: Date.now() - DAY }]);
+    expect(verdictOf("forbidden-cmd")?.verdict).toBe("violated");
+    session("s1", repo, [{ bash: "git push origin feat --follow-tags", at: Date.now() - DAY }]);
+    expect(verdictOf("forbidden-cmd")?.verdict).toBe("followed");
+    for (const cmd of ["git push origin feat --force", "git push -uf origin feat", "git push origin +feat"]) {
+      session("s1", repo, [{ bash: cmd, at: Date.now() - DAY }]);
+      expect(verdictOf("forbidden-cmd")?.verdict, cmd).toBe("violated");
+    }
+    commitClaudeMd("- Never force push; use `--force-with-lease` instead.\n", Date.now() - 3 * DAY);
+    session("s1", repo, [{ bash: "git push --force-with-lease origin feat", at: Date.now() - DAY }]);
+    expect(verdictOf("forbidden-cmd")?.verdict).toBe("followed");
+  });
+
+  it("flags a push that names main, not one that relies on the recorded branch", () => {
+    commitClaudeMd("- Never push directly to `main`.\n", Date.now() - 3 * DAY);
+    // gitBranch lags behind in worktrees and subagents: a bare push is never judged by it
+    session("s1", repo, [{ bash: "git push", at: Date.now() - DAY }], { branch: "main" });
+    session("s2", repo, [{ bash: "git push -u origin feat/x && git push --tags", at: Date.now() - DAY }], { branch: "main" });
+    session("s3", repo, [{ bash: "git push --dry-run origin main && git push origin :main", at: Date.now() - DAY }]);
+    expect(verdictOf("no-direct-branch")?.verdict).toBe("followed");
+    session("s4", repo, [{ bash: "git push origin HEAD:main", at: Date.now() - DAY }], { branch: "feat/x" });
+    expect(verdictOf("no-direct-branch")?.verdict).toBe("violated");
+  });
+
+  it("flags git add .env under 'never commit .env', not reading it or a message about it", () => {
+    commitClaudeMd("- Never commit `.env` files.\n", Date.now() - 3 * DAY);
+    session("s1", repo, [
+      { tool: "Read", file: path.join(repo, ".env"), at: Date.now() - DAY },
+      { bash: "cat .env && git add .env.example", at: Date.now() - DAY },
+      { bash: 'git commit -m "docs: explain .env handling"', at: Date.now() - DAY },
+    ]);
+    expect(verdictOf("no-env", "commit")?.verdict).toBe("followed");
+    session("s2", repo, [{ bash: "git add src .env.local", at: Date.now() - DAY }]);
+    expect(verdictOf("no-env", "commit")?.verdict).toBe("violated");
+  });
+});
+
 describe("rule text", () => {
   it("shows the sentence that holds the rule, not the start of the line", () => {
     const { rules } = extractRulesFromText(
@@ -745,7 +889,8 @@ describe("rules command", () => {
     expect(read("- 本番反映の際は `terraform apply` を手動実行しないこと。")).toEqual([]);
     expect(read("- 権限がなければ `terraform apply` を実行しないこと。")).toEqual([]);
     // still read: "even if" stresses the rule; a reason after 、 does not soften it
-    expect(read("- Never commit `.env` files, even if they seem harmless.")).toEqual(["no-env:"]);
+    // committing .env is forbidden, reading it is not
+    expect(read("- Never commit `.env` files, even if they seem harmless.")).toEqual(["no-env:commit"]);
     expect(read("- Never run `git push --force` even when the branch is yours only.")).toEqual(["forbidden-cmd:git push --force"]);
     expect(read("- `rm -rf` は実行しないこと、影響範囲が大きいため慎重に扱われている。")).toEqual(["forbidden-cmd:rm -rf"]);
     expect(read("- `dist/` は手で編集しないこと、ビルド結果は毎回上書きされる。")).toEqual(["protected-path:dist/"]);
@@ -787,7 +932,7 @@ describe("rules command", () => {
     const { renderRules } = await import("../src/rulesCmd.js");
     const out = renderRules(repo);
     expect(out).toContain("✓ checked (1)");
-    expect(out).toContain("never runs `git push --force`");
+    expect(out).toContain("never force-pushes");
     expect(out).toContain("· not checked (1)");
     expect(out).toContain("Always reply in Japanese.");
   });

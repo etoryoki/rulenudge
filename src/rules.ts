@@ -15,7 +15,8 @@ export type RuleKind =
   | "protected-path"
   | "no-amend-pushed"
   | "commit-format"
-  | "run-before";
+  | "run-before"
+  | "no-direct-branch";
 
 export interface Rule {
   kind: RuleKind;
@@ -28,10 +29,12 @@ export interface Rule {
   since: number;
   /** test-before-commit: the rule asks for passing tests, not just a test run. */
   pass?: boolean;
-  /** run-before: the command must run before this git action. */
+  /** run-before: the command must run before this git action. no-direct-branch: the action. */
   trigger?: "push" | "commit";
   /** forbidden-cmd: only forbidden in the repository's main checkout ("…in the main checkout"). */
   where?: "main-checkout";
+  /** forbidden-cmd (force push): the line allows `--force-with-lease`. */
+  allowLease?: boolean;
 }
 
 export interface Uncheckable {
@@ -211,6 +214,110 @@ function orderTrigger(text: string, token: string): "push" | "commit" | null {
   return null;
 }
 
+/** An English negation shortly before `idx`, in the same clause ("Never push …", "Do not force-push"). */
+function negatedBefore(s: string, idx: number): boolean {
+  let last = -1;
+  for (const n of s.slice(0, idx).matchAll(new RegExp(NEG_EN.source, "gi"))) last = n.index ?? -1;
+  return last >= 0 && idx - last <= 60 && !CLAUSE_BREAK.test(s.slice(last, idx)) && !/[,;、]/.test(s.slice(last, idx));
+}
+
+/** A Japanese prohibition right after `end` (「…しない」「…禁止」), before the clause ends. */
+function negatedAfter(s: string, end: number): boolean {
+  const after = s.slice(end);
+  const n = after.match(NEG_JA);
+  return !!n && (n.index ?? 0) <= 12 && !/[、。,;；]/.test(after.slice(0, n.index));
+}
+
+/** Inside "…", “…” or 「…」: a quoted rule being talked about, not one being made. */
+function inQuotes(s: string, idx: number): boolean {
+  const before = s.slice(0, idx);
+  if ((before.match(/"/g) ?? []).length % 2 === 1) return true;
+  return before.lastIndexOf("“") > before.lastIndexOf("”") || before.lastIndexOf("「") > before.lastIndexOf("」");
+}
+
+const BRANCH_LIST =String.raw`(?:main|master)(?:\s*(?:,|/|\bor\b|\band\b)\s*(?:main|master))*`;
+const DIRECT_EN = new RegExp(
+  String.raw`(?<!force[- ]?)\b(push|commit)(?:es|ed|ing|s)?\b(?:\s+(?:anything|changes?|code|it|them|work))?\s+(?:directly\s+|straight\s+)?(?:to|on|onto|into)\s+(?:the\s+)?(${BRANCH_LIST})(?:\s+branch(?:es)?)?\b`,
+  "gi",
+);
+const DIRECT_JA = new RegExp(
+  String.raw`(${BRANCH_LIST})\s*(?:ブランチ)?\s*(?:に|へ|上で|で)\s*(?:直接)?\s*(push|プッシュ|commit|コミット)`,
+  "gi",
+);
+
+// words after "push to main" that make it an exception or a narrower case ("…, unless it's a docs
+// change", "on Fridays", "from a worktree", "(except hotfixes)")
+const BRANCH_EXCEPTION =
+  /\b(?:unless|except|excluding|if|when|whenever|while|without|during|until|before|after|on|from|for|in|via|by|only|outside)\b/i;
+
+/**
+ * "Never push directly to `main`", "main に直接 push しない". Only pushes: the destination is in
+ * the command (`git push origin main`). A commit's branch is not reliably in the session log,
+ * so "never commit to main" stays unchecked.
+ */
+function directToBranch(text: string): { branch: string; trigger: "push"; at: string }[] {
+  const out: { branch: string; trigger: "push"; at: string }[] = [];
+  const add = (list: string, verb: string, at: string, clause: string) => {
+    if (softened(clause) || !/push|プッシュ/i.test(verb)) return;
+    for (const b of list.match(/main|master/gi) ?? []) out.push({ branch: b.toLowerCase(), trigger: "push", at });
+  };
+  for (const m of text.matchAll(DIRECT_EN)) {
+    const at = m.index ?? 0;
+    if (!negatedBefore(text, at) || inQuotes(text, at)) continue;
+    // "the matching commit to main": a noun, not the action
+    if (/\b(?:the|a|an|each|every|matching|your|their|this|that)\s+$/i.test(text.slice(Math.max(0, at - 12), at))) continue;
+    // "Never push a tag without first pushing … to main": the negation is about something else
+    let neg = -1;
+    for (const n of text.slice(0, at).matchAll(new RegExp(NEG_EN.source, "gi"))) neg = n.index ?? -1;
+    if (/\b(?:without|first|before|after|until|unless)\b/i.test(text.slice(neg, at))) continue;
+    // the rest of the sentence up to an alternative ("— use PRs", "; open a PR"), and any brackets
+    const sentence = sentenceWith(text, m[0]);
+    const tail = sentence.slice(sentence.indexOf(m[0]) + m[0].length);
+    const near = tail.split(/\s[—–-]\s|;|:/)[0].replace(/\([^)]*\)/g, " ");
+    const brackets = (tail.match(/\([^)]*\)/g) ?? []).join(" ");
+    if (BRANCH_EXCEPTION.test(near) || /\b(?:unless|except|excluding|if|when)\b/i.test(brackets)) continue;
+    add(m[2], m[1], m[0], clauseOf(text, m[0]));
+  }
+  for (const m of text.matchAll(DIRECT_JA)) {
+    const end = (m.index ?? 0) + m[0].length;
+    if (!negatedAfter(text, end) || inQuotes(text, m.index ?? 0)) continue;
+    // 「main に直接 push しない（hotfix は除く）」「…しない。ただし…」
+    if (/除く|除いて|以外|例外|ただし|但し|場合|とき|時は/.test(sentenceWith(text, m[0]))) continue;
+    add(m[1], m[2], m[0], clauseOf(text, m[0]));
+  }
+  return out;
+}
+
+const FORCE_PUSH_EN = /\bforce[- ]?push(?:es|ed|ing)?\b|\bpush(?:es|ed|ing)?\s+(?:with\s+)?(?:--force|-f|force)\b/gi;
+const FORCE_PUSH_JA = /強制\s*(?:push|プッシュ)|フォース\s*プッシュ|force[- ]?push/gi;
+/** "use `--force-with-lease` instead", "--force-with-lease is fine": the line allows a lease push. */
+export function allowsLease(line: string): boolean {
+  if (!/lease/i.test(line)) return false;
+  // "Don't use --force-with-lease either" names it to forbid it
+  if (/\b(?:don['’]t|do not|never|nor|not)\s+(?:use\s+|run\s+)?[^.;]{0,20}lease/i.test(line)) return false;
+  return /\binstead\b|\buse\b[^.;]*lease|lease[^.;]*\b(?:is|are)\s+(?:fine|ok|okay|allowed)|代わりに|を使う|を使って|は(?:可|OK|ok|構わない)/i.test(line);
+}
+
+/** "Never force-push", "Do not push with --force", "強制プッシュしない" (no branch or environment). */
+function forcePush(text: string): string | null {
+  for (const m of text.matchAll(FORCE_PUSH_EN)) {
+    // "force push to main / to shared branches", "force-push main": a narrower rule, left unchecked
+    const after = text.slice((m.index ?? 0) + m[0].length);
+    if (/^\s+(?:to|on|onto|into|in)\b|^\s+(?:main|master|develop|trunk|the)\b/i.test(after) || inQuotes(text, m.index ?? 0)) continue;
+    if (negatedBefore(text, m.index ?? 0) && !softened(clauseOf(text, m[0]))) return m[0];
+  }
+  for (const m of text.matchAll(FORCE_PUSH_JA)) {
+    if (inQuotes(text, m.index ?? 0)) continue;
+    if (negatedAfter(text, (m.index ?? 0) + m[0].length) && !softened(clauseOf(text, m[0]))) return m[0];
+  }
+  return null;
+}
+
+/** `git push --force` / `git push -f`: judged as any force push, not by prefix. */
+export function isForcePushRule(cmd: string): boolean {
+  return /^git\s+push\s+(?:--force|-f)$/.test(cmd.trim());
+}
+
 function negationIndex(line: string): number {
   const m = line.match(NEGATION);
   return m?.index ?? -1;
@@ -324,7 +431,33 @@ export function extractRulesFromText(
           const sentence = sentenceWith(base.text, m[0]);
           const mainOnly = MAIN_CHECKOUT.test(sentence);
           if (!mainOnly && SCOPE.test(sentence)) continue;
-          rules.push({ kind: "forbidden-cmd", value: cmd, ...base, text: sentence, ...(mainOnly ? { where: "main-checkout" as const } : {}) });
+          rules.push({
+            kind: "forbidden-cmd",
+            value: cmd,
+            ...base,
+            text: sentence,
+            ...(mainOnly ? { where: "main-checkout" as const } : {}),
+            // `git push --force` written as a command: -f / +refspec count, --force-with-lease does not
+            // (people disagree on whether a lease push breaks it; a missed one beats a false alarm)
+            ...(isForcePushRule(cmd) ? { allowLease: true } : {}),
+          });
+        }
+        // 1c) pushing / committing straight to a branch: "Never push directly to `main`".
+        // The branch is in the session log (Claude Code records `gitBranch`), unlike an environment.
+        const plain = base.text.replace(/`|\*\*|__/g, "");
+        for (const d of directToBranch(plain)) {
+          rules.push({ kind: "no-direct-branch", value: d.branch, trigger: d.trigger, ...base, text: sentenceWith(plain, d.at) });
+        }
+        // 1d) force push in words: "Never force-push" (not "…to main": the branch makes it a scoped rule)
+        const fp = forcePush(plain);
+        if (fp && !SCOPE.test(sentenceWith(plain, fp)) && !MAIN_CHECKOUT.test(sentenceWith(plain, fp))) {
+          rules.push({
+            kind: "forbidden-cmd",
+            value: "git push --force",
+            ...base,
+            text: sentenceWith(plain, fp),
+            ...(allowsLease(line) ? { allowLease: true } : {}),
+          });
         }
         // 1b) protected paths: "Never edit `dist/`", "`*.lock` を手で書き換えない"
         for (const m of line.matchAll(/`([^`]+)`/g)) {
@@ -363,16 +496,31 @@ export function extractRulesFromText(
       const envSentence = sentenceWith(base.text, /\.env/);
       // "`.env` の値はマスクしている" describes the code; it is not a rule for Claude
       if (/(^|[\s`'"(])\.env\b/.test(line) && NEGATION.test(envSentence) && !softened(clauseOf(base.text, ".env")) && !SCOPE.test(envSentence)) {
-        rules.push({ kind: "no-env", ...base, text: sentenceWith(base.text, /\.env/) });
+        // "Never commit `.env` files" forbids committing them, not reading them
+        const commits = /\bcommit|\bstage[sd]?\b|\bgit add\b|\bcheck(?:ed)?\s+in\b|\bpush|コミット|プッシュ|ステージ/i.test(envSentence);
+        // a reading verb in a negated clause ("…or print secrets"), not "…, but do read them when debugging"
+        const reads = envSentence
+          .split(CLAUSE_SPLIT)
+          .some((c) => NEGATION.test(c) && /\bread|\bopen|\bcat\b|\bprint|\bshow|\bdisplay|\bdump|\bview|\baccess|\bload|\bsource\b|読|開|表示|出力|見/i.test(c));
+        if (commits) rules.push({ kind: "no-env", value: "commit", ...base, text: envSentence });
+        if (!commits || reads) rules.push({ kind: "no-env", ...base, text: envSentence });
       }
     }
 
     // 4) package manager ("use pnpm", "pnpm を使う", "pnpm only")
-    const pm =
-      line.match(/\b(?:always\s+)?use\s+(pnpm|yarn|bun|npm)\b(?!\s+to\b)/i) ??
-      line.match(/\b(pnpm|yarn|bun|npm)\s*(?:を使う|を使用|を使って|のみ|only\b)/i);
-    if (pm && !isNegated) {
-      rules.push({ kind: "package-manager", value: pm[1].toLowerCase(), ...base, text: sentenceWith(base.text, pm[1]) });
+    // Judged per clause: "Use pnpm. Do not use npm or yarn." and "Never use npm, use pnpm" name pnpm;
+    // "Don't use yarn" and "できれば pnpm を使う" (a wish) name nothing.
+    // not "use pnpm exec …", "use npx …", "use pnpm@9", "use bun's test runner": running something else,
+    // a pinned version or a feature ("use pnpm install" still names the manager)
+    const PM_RE =
+      /\b(?:always\s+)?use\s+(pnpm|yarn|bun|npm)\b(?!@|['’]s\b|\s+(?:to|exec|dlx|x)\b)|\b(pnpm|yarn|bun|npm)\s*(?:を使う|を使用|を使って|のみ|only\b)/gi;
+    const pmText = base.text.replace(/\*\*|__/g, "");
+    for (const pm of pmText.matchAll(PM_RE)) {
+      const clause = clauseOf(pmText, pm[0]);
+      if (!clause || NEGATION.test(clause) || softened(clause)) continue;
+      const name = (pm[1] ?? pm[2]).toLowerCase();
+      rules.push({ kind: "package-manager", value: name, ...base, text: sentenceWith(base.text, pm[0]) });
+      break;
     }
 
     // 5) worktree only
@@ -387,7 +535,7 @@ export function extractRulesFromText(
     const isRuleLike =
       sentences.some(
         (s) =>
-          /^(never|don['’]t|do not|always|must|make sure|avoid|only|use|run|prefer|keep|write|put|please)\b/i.test(s.trim()) ||
+          /^(never|don['’]t|do not|always|must|make sure|avoid|only|use|run|prefer|keep|write|put|please|ask|confirm|check with|get approval)\b/i.test(s.trim()) ||
           JA_RULE_END.test(s.replace(/[（(][^）)]*[）)]\s*$/, "").trim()),
       ) || /\bmust\b|必ず|禁止|厳禁|しないこと|すること|厳守/i.test(line);
     if (rules.length === before && isRuleLike && (BULLET.test(raw) || /^\*\*/.test(line))) {

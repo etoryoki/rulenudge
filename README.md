@@ -89,9 +89,12 @@ Rules can be written in English or Japanese (`〜しない`, `〜してはいけ
 | Rule in CLAUDE.md / AGENTS.md | Broken when Claude… |
 |---|---|
 | `- Never run \`git push --force\`` (any negated bullet with a command in backticks) | runs that command |
+| `- Never force-push` / `強制プッシュしない` | pushes with `--force`, `-f`, `--force-with-lease` or a `+branch` refspec. `--force-with-lease` is allowed when the line says so ("use `--force-with-lease` instead"), and is never counted for a rule written as `` `git push --force` `` |
+| `- Never push directly to main` / `main に直接 push しない` | runs a push that names `main` (`git push origin main`, `HEAD:main`). A bare `git push` is not judged: the session log does not reliably say which branch was checked out, so "never commit to main" is left unchecked too |
 | `- Don't merge PRs yourself` | runs `gh pr merge` |
 | `- Never read \`.env\` files` | reads `.env`, `.env.local`, … (not `.env.example`) |
-| `- Use pnpm` | installs with npm / yarn / bun |
+| `- Never commit \`.env\` files` | runs `git add` / `git commit` with a `.env` file (reading it is not a violation) |
+| `- Use pnpm` / `- Use pnpm. Do not use npm or yarn.` | installs with npm / yarn / bun |
 | `- Always work in a git worktree, never in the main checkout` | edits files or runs `git switch/commit/reset/…` in the main checkout |
 | ``- Never edit `dist/` `` / `` `*.lock` を手で書き換えない `` | edits or writes a file under that path with a file tool (Edit/Write). Folders (`dist/`), globs (`src/gen/**`, `*.lock`) and file names (`package-lock.json`) |
 | ``- Never create `.txt` files`` / ``生成ファイルは `.md` で保存（`.txt` は不採用）`` | writes a file with that extension with a file tool (Edit/Write) |
@@ -121,6 +124,9 @@ A checker that cries wolf twice stops being read, so false positives are treated
 | Japanese rules | 「メインのチェックアウト**では**」 read as a condition | the rule silently did nothing | judged per clause and bracket |
 | Type check before push | 180 days, 215 pushes | 0 → 2 → 4 as the scope was widened (worktrees, per-package edits) | 1 real violation (a test file edited after the check, pushed with hooks skipped) |
 | Main-checkout rule | 7 days in another project of the author's | `git merge-base` counted as `git merge` | 0 (fixed in 0.7.2, with `git commit-tree` and `git checkout-index`) |
+| Rules written in words (0.8.1) | 297 public CLAUDE.md files from GitHub code search, every new rule read by hand | 122 new rules, 14 misread (`force push to main` as a ban on every force push, "the matching commit to main", "without asking first", a rule quoted inside another sentence, `use pnpm exec`); review found more ("…, unless it's a docs change", the branch Claude Code records lagging behind in worktrees) | 71 new rules, none misread; 3 rules 0.8.0 read (`use pnpm's --filter`, `corepack use pnpm@11`, `use pnpm scripts if available`) are now left unchecked, and 0.8.0's misreading of "Tests use bun's test runner" as "use bun" is gone. Exceptions anywhere in the sentence leave the rule unchecked; pushes are judged only by the branch named in the command |
+
+Known misreadings (since 0.7): ``Don't use `npm`, use `pnpm`.`` reads both commands as forbidden — write it as `Use pnpm, not npm.` A line naming two managers (`Use pnpm or yarn.`, `Use npm for scripts, pnpm for installs.`) keeps only the first.
 
 After these fixes, one real violation was left in the author's own logs. If rulenudge reports something a person looking at the same evidence would not call a violation, please [open an issue](https://github.com/etoryoki/rulenudge/issues).
 
@@ -166,7 +172,10 @@ rulenudge rules               # どのルールが点検でき、どれができ
 
 | CLAUDE.md の書き方 | 違反になるのは |
 |---|---|
-| ``- `git push --force` を実行しない`` | そのコマンドを実行したとき |
+| ``- `rm -rf` を実行しない`` | そのコマンドを実行したとき |
+| `- 強制プッシュしない` | `--force`・`-f`・`--force-with-lease` などで push したとき |
+| `- main に直接 push しない` | `main` を指定して push したとき（`git push origin main` など。ブランチを書かない `git push` は判定しない） |
+| ``- `.env` をコミットしない`` | `.env` を `git add` / `git commit` したとき（読むだけなら違反にしない） |
 | ``- 生成ファイルは `.md` で保存（`.txt` は不採用）`` | `.txt` のファイルを書いたとき |
 | ``- `dist/` を手で書き換えない`` | そのフォルダのファイルを編集したとき |
 | `- push 済みのコミットを amend しない` | push の後に、新しいコミットを挟まずに `git commit --amend` したとき |

@@ -10,9 +10,9 @@ import path from "node:path";
 
 import { inMainCheckout, isUnder, norm, repoInfo, sameRepo, worktreeRoot } from "./git.js";
 import { AmendAfterPushTracker, type OrderTracker, RunBeforeTracker, TestBeforeCommitTracker } from "./order.js";
-import { extractRules, NEGATION, type Rule, type Uncheckable } from "./rules.js";
+import { extractRules, isForcePushRule, NEGATION, type Rule, type Uncheckable } from "./rules.js";
 import type { SessionInfo, ToolEvent } from "./sessions.js";
-import { commandsWithCwd, commitSubjects, normalizeMsysPath, startsWithCommand, unquote } from "./shell.js";
+import { commandsWithCwd, commitSubjects, normalizeMsysPath, QCLOSE, QOPEN, startsWithCommand, unquote } from "./shell.js";
 
 export type Verdict = "violated" | "unclear" | "followed" | "not-applicable";
 
@@ -164,6 +164,49 @@ function fileOf(ev: ToolEvent): string | null {
   return typeof p === "string" ? normalizeMsysPath(p) : null;
 }
 
+/** `git push -f`, `git push origin x --force`, `git push -uf`, `git push origin +x` (lease only if not allowed). */
+export function isForcePush(text: string, allowLease: boolean): boolean {
+  if (!/^git\s+push(?![\w-])/.test(text)) return false;
+  return text
+    .split(/\s+/)
+    .slice(2)
+    .some(
+      (t) =>
+        t === "--force" ||
+        /^-[a-z]*f[a-z]*$/i.test(t) ||
+        (t.startsWith("--force-with-lease") && !allowLease) ||
+        /^\+[^\s+]/.test(t),
+    );
+}
+
+/**
+ * Branches a `git push` names as its destination (`main`, `HEAD:main`, `+main`). A push without
+ * a refspec goes to the current branch, which the session log does not reliably tell (Claude Code's
+ * `gitBranch` lags behind in worktrees and subagents), so it names nothing.
+ */
+export function pushTargets(text: string): string[] {
+  const words = text.split(/\s+/).slice(2);
+  const positional: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    // deleting, dry runs and tag pushes do not put work on a branch
+    if (w === "--delete" || w === "-d" || w === "--dry-run" || w === "-n" || w === "--tags") return [];
+    if (w === "-o" || w === "--push-option" || w === "--repo" || w === "--receive-pack" || w === "--exec") i++;
+    else if (!w.startsWith("-")) positional.push(w);
+  }
+  return positional.slice(1).flatMap((r) => {
+    if (r.startsWith(":")) return []; // `:main` deletes the remote branch
+    const dst = (r.includes(":") ? r.slice(r.indexOf(":") + 1) : r).replace(/^\+/, "").replace(/^refs\/heads\//, "");
+    return dst === "HEAD" ? [] : [dst];
+  });
+}
+
+/** `git add` / `git commit` naming a .env file outside quotes (not `-m "explain .env"`). */
+function addsEnvFile(text: string): boolean {
+  if (!/^git\s+(?:add|commit)(?![\w-])/.test(text)) return false;
+  return ENV_FILE.test(text.replace(new RegExp(`${QOPEN}[^${QCLOSE}]*${QCLOSE}`, "g"), " "));
+}
+
 /** Returns what was violated (a short description), or null. */
 function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] } | null {
   const cmd = commandOf(ev);
@@ -188,8 +231,9 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
     }
     switch (rule.kind) {
       case "forbidden-cmd": {
+        const force = isForcePushRule(rule.value!);
         const hit = cmds.find((c) => {
-          if (!startsWithCommand(c.text, rule.value!)) return false;
+          if (force ? !isForcePush(unquote(c.text), !!rule.allowLease) : !startsWithCommand(c.text, rule.value!)) return false;
           if (rule.where !== "main-checkout") return true;
           // "…in the main checkout": the same command in a linked worktree is fine
           const repo = repoInfo(c.cwd);
@@ -209,7 +253,21 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
         });
         return hit ? { what: show(hit), keywords: [hit.text.split(/\s+/)[0]] } : null;
       }
+      case "no-direct-branch": {
+        // a push the remote rejected (protected branch) did not happen
+        if (ev.isError === true) return null;
+        const hit = cmds.find((c) => /^git\s+push(?![\w-])/.test(c.text) && pushTargets(unquote(c.text)).includes(rule.value!));
+        if (!hit) return null;
+        return { what: `${show(hit)}  (to ${rule.value})`, keywords: ["push", rule.value!] };
+      }
       case "no-env": {
+        if (rule.value === "commit") {
+          if (ev.isError === true) return null; // e.g. `git add .env` refused because it is ignored
+          const hit = cmds.find((c) => addsEnvFile(c.text));
+          if (!hit) return null;
+          const envFile = unquote(hit.text).match(/\.env[\w.-]*/)?.[0] ?? ".env";
+          return { what: show(hit), keywords: [envFile, ".env", "commit"] };
+        }
         const hit = cmds.find((c) => READERS.test(c.text) && ENV_FILE.test(unquote(c.text)));
         if (!hit) return null;
         const envFile = unquote(hit.text).match(/\.env[\w.-]*/)?.[0] ?? ".env";
@@ -232,7 +290,7 @@ function detect(rule: Rule, ev: ToolEvent): { what: string; keywords: string[] }
 
   if (file !== null && FILE_TOOLS.has(ev.tool)) {
     if (root && !isUnder(file, root)) return null;
-    if (rule.kind === "no-env") {
+    if (rule.kind === "no-env" && rule.value !== "commit") {
       const base = path.basename(file);
       if (/^\.env(\.|$)/.test(base) && !/\.(example|sample|template|dist)$/.test(base)) {
         return { what: `${ev.tool} ${file}`, keywords: [base, ".env"] };
